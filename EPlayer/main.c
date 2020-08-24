@@ -18,174 +18,132 @@
 #include "swscale.h"
 #include "imgutils.h"
 
+#define VIDEO_PICTURE_QUEUE_SIZE 3
+#define SUBPICTURE_QUEUE_SIZE 16
+#define SAMPLE_QUEUE_SIZE 9
+#define FRAME_QUEUE_SIZE FFMAX(SAMPLE_QUEUE_SIZE, FFMAX(VIDEO_PICTURE_QUEUE_SIZE, SUBPICTURE_QUEUE_SIZE))
+
+int startup_volume = 100;
+static AVPacket flush_pkt;
+const char *out_file_name = "/Users/zhaofei/Downloads/test_record_audio_aac_decode.pcm";
+FILE *outfile = NULL;
+
+typedef struct MyAVPacketList {
+    AVPacket pkt;
+    struct MyAVPacketList *next;
+    int serial;
+} MyAVPacketList;
 
 
-#define sdl_custom_envet_refresh_event_type (SDL_USEREVENT + 1)
-
-static bool play_exit = false;
-static bool play_pause = false;
-
-int sdl_thread_handle_refreshing(void *opaque) {
+typedef struct PacketQueue {
+    MyAVPacketList *first_pkt, *last_pkt;
+    int nb_packets;
+    int size;
+    int64_t duration;
+    int abort_request;
+    int serial;
     
-    int frame_rate = *((int *)opaque);
-    int interval = (frame_rate > 0) ? 1000/frame_rate : 40;
-    
-    while (!play_exit) {
-        if (!play_pause) {
-            Uint32 myEventType = SDL_RegisterEvents(1);
-            if (myEventType != ((Uint32)-1)) {
-                SDL_Event event;
-                SDL_memset(&event, 0, sizeof(event)); /* or SDL_zero(event) */
-                event.type = sdl_custom_envet_refresh_event_type;
-                SDL_PushEvent(&event);
-            }
-            SDL_Delay(interval);
-        }
-    }
-    return 0;
-}
+    SDL_mutex *mutex;
+    SDL_cond *cond;
+} PacketQueue;
 
 
-int main(int argc, const char * argv[]) {
+typedef struct Frame {
+    AVFrame *frame;
+    double pts;             /* presentation timestamp for the frame */
+    double duration;
+    int64_t pos;            /* byte position of the frame in the input file */
     
-    const char *input_filename = "/Users/zhaofei/Desktop/1-2 课程导学.mp4";
+    int width;
+    int height;
+    int format;
+    AVRational sar;
+    int uploaded;
+    int flip_v;
+} Frame;
+
+typedef struct FrameQueue {
+    Frame queue[FRAME_QUEUE_SIZE];
+    int read_index;
+    int write_index;
     
-    int ret = -1;
-    char errors[1024] = {0,};
+    int size;               // 总帧数
+    int max_size;           // 队列可存储最大帧数
+    int keep_last;
+    int rindex_shown;       // 当前是否有帧在显示
     
-    // FFmpeg
-    AVFormatContext *fmt_ctx = NULL;
-    AVInputFormat *input_fmt = NULL;
+    SDL_mutex *mutex;
+    SDL_cond *cond;
+    PacketQueue *pkt_queue;
     
-    AVCodecParameters *codec_par = NULL;
-    AVCodec *codec = NULL;
-    AVCodecContext *codec_ctx = NULL;
+} FrameQueue;
+
+
+typedef struct Clock {
+    double pts;
+    double pts_drift;
+    double last_updated;
+    double speed;
+    int serial;
+    int paused;
+    int *queue_serial;
+} Clock;
+
+
+typedef struct Decoder {
+    AVPacket pkt;
+    PacketQueue *pkt_queue;
+    AVCodecContext *codec_ctx;
+    int pkt_serial;
+    int finished;
+    int packet_pending;
     
-    AVFrame *frame_raw = NULL; // 帧, 由包解码得到原始帧
-    AVFrame *frame_yuv = NULL; // 帧, 由原始帧 色彩转换得到
+    int64_t start_pts;
+    AVRational start_pts_tb;
+    int64_t next_pts;
+    AVRational next_pts_tb;
     
-    AVPacket *packet = NULL; // 包, 从流中读取的一段数据
+    SDL_cond *empty_queue_cond;
+    SDL_Thread *decoder_tid;
     
-    struct SwsContext *sws_ctx = NULL;
+} Decoder;
+
+typedef struct PlayState {
     
-    int video_stream_index; // 视频流索引
-    int frame_rate;
+    char *filename;
     
+    AVFormatContext *fmt_ctx;
+    AVInputFormat *input_fmt;
+    
+    // audio
+    int auido_stream_index;
+    Decoder audio_decoder;
+    PacketQueue audio_packet_queue;
+    FrameQueue audio_frame_queue;
+    Clock audio_clock;
+    int audio_clock_serial;
+    int audio_volume;
+    
+    // video
+    int video_stream_index;
+    Decoder video_decoder;
+    PacketQueue video_packet_queue;
+    FrameQueue video_frame_queue;
+    Clock video_clock;
     
     // SDL
-    SDL_Window *window = NULL;
-    SDL_Renderer *renderer = NULL;
-    SDL_Surface *bmp = NULL;
-    SDL_Texture *texture = NULL;
-    SDL_Thread *sdl_refresh_thread = NULL;
+    SDL_Thread *read_tid;
+    SDL_cond *continue_read_thread;
     
+} PlayState;
+
+void set_av_log_level_and_check_ffmpeg_version() {
     av_log_set_level(AV_LOG_DEBUG);
     const char *version_info = av_version_info();
     av_log(NULL, AV_LOG_INFO, "FFmpeg version info: %s\n", version_info);
-    
-    ret = avformat_open_input(&fmt_ctx, input_filename, input_fmt, NULL);
-    
-    if (ret < 0) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "could not open file: %s, errors: %s", input_filename, errors);
-        goto __Destroy;
-    }
-    
-    
-    ret = avformat_find_stream_info(fmt_ctx, NULL);
-    if (ret < 0) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "could not fild stream info errors: %s", errors);
-        goto __Destroy;
-    }
-    
-    video_stream_index = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, &codec, 0);
-    if (video_stream_index < 0) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "could not fild video stream errors: %s", errors);
-        goto __Destroy;
-    }
-    
-    // 打印输入文件的信息
-    av_dump_format(fmt_ctx, video_stream_index, input_filename, 0);
-    
-    codec_par = fmt_ctx->streams[video_stream_index]->codecpar;
-    
-    // 解码器
-    codec = avcodec_find_decoder(codec_par->codec_id);
-    if (!codec) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "could not find decoder by id: %d, errors: %s", codec_par->codec_id, errors);
-        goto __Destroy;
-    }
-    
-    // 解码上下文
-    codec_ctx = avcodec_alloc_context3(codec);
-    if (!codec_ctx) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "could not alloc code context errors: %s", errors);
-        goto __Destroy;
-    }
-    
-    ret = avcodec_parameters_to_context(codec_ctx, codec_par);
-    if (ret < 0) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "fill codec_ctx with codec parameters errors: %s", errors);
-        goto __Destroy;
-    }
-    
-    
-    // 打开解码器
-    ret = avcodec_open2(codec_ctx, codec, NULL);
-    if (ret < 0) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "open codec errors: %s", errors);
-        goto __Destroy;
-    }
-    
-    // 分配AVFrame空间, 并不会分配 data buffer (AVFrame.*data[])
-    frame_raw = av_frame_alloc();
-    frame_yuv = av_frame_alloc();
-    
-    
-    /*
-     为frame_yuv->data手动分配缓冲区，用于存储sws_scale()中目的帧视频数据
-     frame_raw的data_buffer由av_read_frame()分配，因此不需手工分配
-     frame_yuv的data_buffer无处分配，因此在此处手工分配
-     */
-    int buffer_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, codec_ctx->width, codec_ctx->height, 1);
-    if (buffer_size < 0) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "image get buferr size errors: %s", errors);
-        goto __Destroy;
-    }
-    // buffer将作为frame_yuv的视频数据缓冲区
-    void *buffer = av_malloc(buffer_size);
-    if (!buffer) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "malloc buffer errors: %s", errors);
-        goto __Destroy;
-    }
-    // 使用给定参数设定frame_yuv->data和frame_yuv->linesize
-    av_image_fill_arrays(frame_yuv->data, frame_yuv->linesize, buffer, AV_PIX_FMT_YUV420P, codec_ctx->width, codec_ctx->height, 1);
-    
-    
-    // 初始化 sws_context, 用户后续图像转换
-    sws_ctx = sws_getContext(codec_ctx->width,
-                   codec_ctx->height, codec_ctx->pix_fmt,
-                   codec_ctx->width,
-                   codec_ctx->height,
-                   AV_PIX_FMT_YUV420P,
-                   SWS_BICUBIC,
-                   NULL,
-                   NULL,
-                   NULL);
-    if (!sws_ctx) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "sws_getContext errors: %s", errors);
-        goto __Destroy;
-    }
-    
+}
+
+void check_sdl_version() {
     // SDL
     SDL_version compiled;
     SDL_version linked;
@@ -195,22 +153,456 @@ int main(int argc, const char * argv[]) {
     
     SDL_Log("We compiled against SDL version %d.%d.%d ...\n", compiled.major, compiled.minor, compiled.patch);
     SDL_Log("But we are linking against SDL version %d.%d.%d.\n", linked.major, linked.minor, linked.patch);
+}
+
+
+static int frame_queue_init(FrameQueue *f_q, PacketQueue *pkt_q, int max_size, int keep_last) {
     
+    memset(f_q, 0, sizeof(FrameQueue));
     
-    ret = SDL_Init(SDL_INIT_EVERYTHING);
-    
-    if (ret != 0) {
-        SDL_Log("Unabel to init SDL: %s", SDL_GetError());
-        goto __Destroy;
+    if ((f_q->mutex = SDL_CreateMutex()) == NULL) {
+        av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex error: %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
     }
     
+    if ((f_q->cond = SDL_CreateCond()) == NULL) {
+        av_log(NULL, AV_LOG_FATAL, "SDL_CreateCond error: %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
+    
+    f_q->pkt_queue = pkt_q;
+    f_q->max_size = FFMIN(max_size, FRAME_QUEUE_SIZE);
+    f_q->keep_last = !!keep_last;
+    
+    // 为 FrameQueue 中的每个frame 分配空间
+    for (int i = 0; i < f_q->max_size; i++) {
+        if ((f_q->queue[i].frame = av_frame_alloc()) == NULL) {
+            av_log(NULL, AV_LOG_FATAL, "av_frame_alloc error\n");
+            return AVERROR(ENOMEM);
+        }
+    }
+    
+    return 0;
+}
+
+static int packet_queue_init(PacketQueue *pkt_q) {
+    
+    memset(pkt_q, 0, sizeof(PacketQueue));
+    
+    if ((pkt_q->mutex = SDL_CreateMutex()) == NULL) {
+        av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex error: %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
+    
+    if ((pkt_q->cond = SDL_CreateCond()) == NULL) {
+        av_log(NULL, AV_LOG_FATAL, "SDL_CreateCond error: %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
+    
+    return 0;
+}
+
+static void clock_init(Clock *c, int *queue_serial) {
+    c->speed = 1.0;
+    c->paused = 0;
+    c->queue_serial = queue_serial;
+}
+
+
+
+static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt) {
+    
+    MyAVPacketList *pkt1;
+
+    if (q->abort_request)
+       return -1;
+    // 将 pkt 封装成 MyAVPacketList
+    pkt1 = av_malloc(sizeof(MyAVPacketList));
+    if (!pkt1)
+        return -1;
+    pkt1->pkt = *pkt;
+    pkt1->next = NULL;
+    if (pkt == &flush_pkt)
+        q->serial++;
+    pkt1->serial = q->serial;
+    
+    // 判断队队列是否是空的
+    if (!q->last_pkt)
+        // 空的, 设置 first_pkt
+        q->first_pkt = pkt1;
+    else
+        q->last_pkt->next = pkt1;
+    q->last_pkt = pkt1;
+    q->nb_packets++;
+    q->size += pkt1->pkt.size + sizeof(*pkt1);
+    q->duration += pkt1->pkt.duration;
+    /* XXX: should duplicate packet data in DV case */
+    // 通知 读取线程 队列里有数据了
+    SDL_CondSignal(q->cond);
+    return 0;
+}
+
+/**
+ return < 0 if aborted, 0 if no packet and > 0 if packet.
+ 读取packet
+ block 为1 阻塞线程读取, 0 非阻塞读取
+ */
+static int packet_queue_get(PacketQueue *q, AVPacket *pkt, int block, int *serial) {
+    MyAVPacketList *pkt1;
+    int ret;
+
+    SDL_LockMutex(q->mutex);
+
+    for (;;) {
+        if (q->abort_request) {
+            ret = -1;
+            break;
+        }
+
+        pkt1 = q->first_pkt;
+        if (pkt1) {
+            // 移动 first_pkt 和 last_pkt 指针地址
+            q->first_pkt = pkt1->next;
+            // 没有 packet 了
+            if (!q->first_pkt)
+                q->last_pkt = NULL;
+            
+            q->nb_packets--;
+            q->size -= pkt1->pkt.size + sizeof(*pkt1);
+            q->duration -= pkt1->pkt.duration;
+            // *pkt  浅拷贝 pkt1->pkt 指针
+            *pkt = pkt1->pkt;
+            if (serial)
+                *serial = pkt1->serial;
+            // 释放pkt1 内存
+            av_free(pkt1);
+            ret = 1;
+            // 退出循环
+            break;
+        } else if (!block) {
+            // 非阻塞读取, 直接退出循环
+            ret = 0;
+            break;
+        } else {
+            // 阻塞读取, 等待 pakcet 队列写入数据
+            SDL_CondWait(q->cond, q->mutex);
+        }
+    }
+    SDL_UnlockMutex(q->mutex);
+    return ret;
+}
+
+/**
+    清空 packet queue
+ */
+static void packet_queue_flush(PacketQueue *q) {
+    MyAVPacketList *pkt, *pkt1;
+
+    SDL_LockMutex(q->mutex);
+    for (pkt = q->first_pkt; pkt; pkt = pkt1) {
+        pkt1 = pkt->next;
+        av_packet_unref(&pkt->pkt);
+        av_freep(&pkt);
+    }
+    q->last_pkt = NULL;
+    q->first_pkt = NULL;
+    q->nb_packets = 0;
+    q->size = 0;
+    q->duration = 0;
+    SDL_UnlockMutex(q->mutex);
+}
+
+/**
+    将packet 写入队列
+ */
+static int packet_queue_put(PacketQueue *q, AVPacket *pkt) {
+    int ret;
+
+    SDL_LockMutex(q->mutex);
+    ret = packet_queue_put_private(q, pkt);
+    SDL_UnlockMutex(q->mutex);
+    
+    if (ret < 0) {
+        av_packet_unref(pkt);
+    }
+
+    if (pkt != &flush_pkt && ret < 0)
+        av_packet_unref(pkt);
+
+    return ret;
+}
+
+static void packet_queue_start(PacketQueue *q) {
+    SDL_LockMutex(q->mutex);
+    q->abort_request = 0;
+    packet_queue_put_private(q, &flush_pkt);
+    SDL_UnlockMutex(q->mutex);
+}
+
+static void decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, SDL_cond *empty_queue_cond) {
+    memset(d, 0, sizeof(Decoder));
+    d->codec_ctx = avctx;
+    d->pkt_queue = queue;
+    d->empty_queue_cond = empty_queue_cond;
+    d->start_pts = AV_NOPTS_VALUE;
+    d->pkt_serial = -1;
+}
+
+static int decoder_start(Decoder *d, int (*fn)(void *), const char *thread_name, void* arg) {
+    packet_queue_start(d->pkt_queue);
+    d->decoder_tid = SDL_CreateThread(fn, thread_name, arg);
+    if (!d->decoder_tid) {
+        av_log(NULL, AV_LOG_ERROR, "SDL_CreateThread(): %s\n", SDL_GetError());
+        return AVERROR(ENOMEM);
+    }
+    return 0;
+}
+
+static int audio_thread(void* arg) {
+    PlayState *is = arg;
+    int ret = 0;
+    av_log(NULL, AV_LOG_DEBUG, "audio_thread arg: %p", arg);
+    
+    AVPacket *pkt;
+    pkt = av_packet_alloc();
+    
+    AVFrame *frame = NULL;
+    frame = av_frame_alloc();
+    
+    while (1) {
+        ret = packet_queue_get(is->audio_decoder.pkt_queue, pkt, 1, &is->audio_decoder.pkt_serial);
+        if (ret < 0) {
+            break;
+        }
+        av_log(NULL, AV_LOG_DEBUG, "packet_queue_get: %p\n", pkt->data);
+        
+        av_log(NULL, AV_LOG_DEBUG, "packet_queue_get----: %p\n", &pkt);
+        ret = avcodec_send_packet(is->audio_decoder.codec_ctx, pkt);
+        
+        if (ret < 0) {
+            char error[1024] = {0,};
+            av_strerror(ret, error, 1024);
+            av_log(NULL, AV_LOG_ERROR, "send packet to codec error: %s\n", error);
+        }
+        
+        while (ret >= 0) {
+            ret = avcodec_receive_frame(is->audio_decoder.codec_ctx, frame);
+            
+            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                break;
+            } else {
+                if (ret < 0) {
+                    av_log(NULL, AV_LOG_ERROR, "error during decoding\n");
+                    return 0;
+                }
+
+                int data_size = av_get_bytes_per_sample(is->audio_decoder.codec_ctx->sample_fmt);
+
+                for (int i = 0; i < frame->nb_samples; i++) { // 每个声道的采样个数
+                    for (int ch = 0; ch < is->audio_decoder.codec_ctx->channels; ch++) { // 声道数
+                        fwrite(frame->data[ch] + data_size * i, 1, data_size, outfile);
+                        fflush(outfile);
+                    }
+                }
+            }
+        }
+    }
+    
+    return 0;
+}
+
+static int stream_component_open(PlayState *is, int stream_index) {
+    int ret = 0;
+    AVFormatContext *fmt_ctx = is->fmt_ctx;
+    AVCodecContext *codec_ctx = NULL;
+    AVCodec *codec = NULL;
+    
+    codec_ctx = avcodec_alloc_context3(NULL);
+    if (!codec_ctx) {
+        return AVERROR(ENOMEM);
+    }
+    
+    ret = avcodec_parameters_to_context(codec_ctx, fmt_ctx->streams[stream_index]->codecpar);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_FATAL, "Fail avcodec_parameters_to_context");
+        return ret;
+    }
+    is->audio_decoder.codec_ctx = codec_ctx;
+    
+    codec = avcodec_find_decoder(codec_ctx->codec_id);
+    if (!codec) {
+        av_log(NULL, AV_LOG_FATAL, "Could not find decoder by id: %d", codec_ctx->codec_id);
+        return -1;
+    }
+    
+    // 打开解码器
+    avcodec_open2(is->audio_decoder.codec_ctx, codec, NULL);
+    
+    decoder_init(&is->audio_decoder, codec_ctx, &is->audio_packet_queue, is->continue_read_thread);
+    // 开始解码
+    decoder_start(&is->audio_decoder, audio_thread, "audio_decoder", is);
+    
+    return 0;
+}
+
+/**
+    解复用线程, 读取 AVPacket
+ */
+static int read_thread(void *arg) {
+    PlayState *is = arg;
+    av_log(NULL, AV_LOG_DEBUG, "read_thread: %p\n", is);
+    
+    int ret = 0;
+    
+    AVFormatContext *fmt_ctx;
+    AVPacket pkt1, *pkt = &pkt1;
+    
+    fmt_ctx = avformat_alloc_context();
+    if (!fmt_ctx) {
+        av_log(NULL, AV_LOG_FATAL, "Could not alloc AVFrameContext\n");
+        ret = AVERROR(ENOMEM);
+        goto __Fail;
+    }
+    is->fmt_ctx = fmt_ctx;
+    
+    ret = avformat_open_input(&fmt_ctx, is->filename, is->input_fmt, NULL);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_FATAL, "Could not open avformat_open_input\n");
+        goto __Fail;
+    }
+    
+    ret = avformat_find_stream_info(fmt_ctx, NULL);
+    if (ret < 0) {
+        av_log(NULL, AV_LOG_FATAL, "Could not open avformat_open_input\n");
+        goto __Fail;
+    }
+    
+    int auido_stream_index = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+    if (auido_stream_index < 0) {
+        av_log(NULL, AV_LOG_FATAL, "Could not find audio stream\n");
+        goto __Fail;
+    }
+    is->auido_stream_index = auido_stream_index;
+    
+    if (!pkt) {
+        av_log(NULL, AV_LOG_FATAL, "Could not alloc packet\n");
+        goto __Fail;
+    }
+    
+    stream_component_open(is, is->auido_stream_index);
+    
+    while (1) {
+        ret = av_read_frame(fmt_ctx, pkt);
+        if (ret < 0) {
+            if (ret == AVERROR_EOF) {
+                break;
+            } else {
+                av_log(NULL, AV_LOG_FATAL, "av_read_frame error\n");
+                goto __Fail;
+            }
+        } else {
+            av_log(NULL, AV_LOG_DEBUG, "pkt: %p\n", pkt->data);
+            av_log(NULL, AV_LOG_DEBUG, "pkt-----: %p\n", pkt);
+            
+            // 将 packet 写入到 audio_packet_queue中
+            packet_queue_put(&is->audio_packet_queue, pkt);
+        }
+    }
+    
+__Fail:
+    if (fmt_ctx) {
+        avformat_free_context(fmt_ctx);
+    }
+    return ret;
+}
+
+static PlayState *stream_open(const char *filename, AVInputFormat *input_fmt) {
+    PlayState *is;
+    
+    is = av_mallocz(sizeof(PlayState));
+    if (!is) {
+        return NULL;
+    }
+    
+    is->auido_stream_index = -1;
+    is->video_stream_index = -1;
+    is->filename = av_strdup(filename);
+    is->input_fmt = input_fmt;
+    
+    // Frame Queue
+    if (frame_queue_init(&is->audio_frame_queue, &is->audio_packet_queue, SAMPLE_QUEUE_SIZE, 1) < 0) {
+        return NULL;
+    }
+    
+    // Packet Queue
+    if (packet_queue_init(&is->audio_packet_queue) < 0) {
+        return NULL;
+    }
+    
+    if ((is->continue_read_thread = SDL_CreateCond()) == NULL) {
+        av_log(NULL, AV_LOG_FATAL, "SDL_CreateCond error: %s\n", SDL_GetError());
+        return NULL;
+    }
+    
+    // Clock
+    clock_init(&is->audio_clock, &is->audio_packet_queue.serial);
+    is->audio_clock_serial = -1;
+    
+    // 音量
+    if (startup_volume < 0) {
+        av_log(NULL, AV_LOG_WARNING, "-volume=%d < 0, settting to 0\n", startup_volume);
+    }
+    if (startup_volume > 100) {
+        av_log(NULL, AV_LOG_WARNING, "-volume=%d > 100, setting to 100\n", startup_volume);
+    }
+    startup_volume = av_clip_c(startup_volume, 0, 100);
+    startup_volume = av_clip_c(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
+    is->audio_volume = startup_volume;
+    
+    
+    // read_thread
+    is->read_tid = SDL_CreateThread(read_thread, filename, is);
+    
+    
+    return NULL;
+}
+
+static void event_loop(PlayState *is) {
+    SDL_Event e;
+    
+    
+}
+
+int main(int argc, const char * argv[]) {
+    
+    outfile = fopen(out_file_name, "wb");
+    
+    // SDL
+    SDL_Window *window = NULL;
+    SDL_Renderer *renderer = NULL;
+    SDL_Surface *bmp = NULL;
+    SDL_Texture *texture = NULL;
+    SDL_Thread *sdl_refresh_thread = NULL;
+    
+    const char *input_filename = "/Users/zhaofei/Desktop/test_record_audio_aac.aac";
+    
+    set_av_log_level_and_check_ffmpeg_version();
+    check_sdl_version();
+    
+    av_init_packet(&flush_pkt);
+    flush_pkt.data = (uint8_t *)&flush_pkt;
+    
+    PlayState *is;
+    is = stream_open(input_filename, NULL);
+    
     // 窗口
-    window = SDL_CreateWindow("Hello world", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, codec_ctx->width, codec_ctx->height, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow("Hello world", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE);
     
     if (!window) {
         SDL_Log("Could not create window: %s", SDL_GetError());
         goto __Destroy;
     }
+    
     /**
      渲染器
      index: -1, SDL自动选择适合我们指定的选项的驱动
@@ -226,151 +618,38 @@ int main(int argc, const char * argv[]) {
     }
 
 
-//    bmp = SDL_LoadBMP("/Users/zhaofei/Desktop/1598025169612.bmp");
-//    if (!bmp) {
-//        SDL_Log("load bmp fail: %s", SDL_GetError());
-//        goto __Destroy;
-//    }
-
-//    texture = SDL_CreateTextureFromSurface(renderer, bmp);
-    
-    texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_IYUV, SDL_TEXTUREACCESS_STREAMING, codec_ctx->width, codec_ctx->height);
-    if (!texture) {
-        SDL_Log("create texture from surface fail: %s", SDL_GetError());
+    bmp = SDL_LoadBMP("/Users/zhaofei/Desktop/1598025169612.bmp");
+    if (!bmp) {
+        SDL_Log("load bmp fail: %s", SDL_GetError());
         goto __Destroy;
     }
 
-    SDL_Rect sdl_rect;
-    sdl_rect.x = 0;
-    sdl_rect.y = 0;
-    sdl_rect.w = codec_ctx->width;
-    sdl_rect.h = codec_ctx->height;
+    texture = SDL_CreateTextureFromSurface(renderer, bmp);
     
-    packet = av_packet_alloc();
+    SDL_FreeSurface(bmp);
+    bmp = NULL;
     
-    if (!packet) {
-        av_strerror(ret, errors, 1024);
-        av_log(NULL, AV_LOG_ERROR, "alloc packet errors: %s", errors);
-        goto __Destroy;
-    }
+    SDL_RenderClear(renderer);
+    SDL_RenderCopy(renderer, texture, NULL, NULL);
+    SDL_RenderPresent(renderer);
     
-    sdl_refresh_thread = SDL_CreateThread(sdl_thread_handle_refreshing, "refresh_thread", (void *)&frame_rate);
-    if (!sdl_refresh_thread) {
-        SDL_Log("create sdl refresh thread fail: %s", SDL_GetError());
-        goto __Destroy;
-    }
     
     SDL_Event e;
-    
-    while (1) {
-        
-        SDL_WaitEvent(&e);
-        
-        if (e.type == sdl_custom_envet_refresh_event_type) {
-            // 读取 AVPacket
-            while (av_read_frame(fmt_ctx, packet) == 0) {
-                // 仅处理视频
-                if (packet->stream_index == video_stream_index) {
-                    
-                    ret = avcodec_send_packet(codec_ctx, packet);
-                    
-                    if (ret < 0) {
-                        av_strerror(ret, errors, 1024);
-                        av_log(NULL, AV_LOG_ERROR, "send packet to codec error: %s\n", errors);
-                        goto __Destroy;
-                    }
-                    
-                    while (ret >= 0) {
-                        ret = avcodec_receive_frame(codec_ctx, frame_raw);
-                        
-                        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                            break;
-                        } else {
-                            
-                            if (ret < 0) {
-                                av_strerror(ret, errors, 1024);
-                                av_log(NULL, AV_LOG_ERROR, "error during decoding: %s\n", errors);
-                                goto __Destroy;
-                            }
-                            
-                            
-                            sws_scale(sws_ctx,
-                                      (const uint8_t *const *)frame_raw->data,
-                                      frame_raw->linesize,
-                                      0,
-                                      codec_ctx->height,
-                                      frame_yuv->data,
-                                      frame_yuv->linesize);
-                            
-                            SDL_UpdateYUVTexture(texture,
-                                                 &sdl_rect,
-                                                 frame_yuv->data[0], frame_yuv->linesize[0],
-                                                 frame_yuv->data[1], frame_yuv->linesize[1],
-                                                 frame_yuv->data[2], frame_yuv->linesize[2]
-                                                 );
-                            
-                            
-                            // 使用特定颜色清空当前渲染目标
-                            SDL_RenderClear(renderer);
-                            // 使用部分图像数据(texture)更新当前渲染目标
-                            SDL_RenderCopy(renderer, texture, NULL, &sdl_rect);
-                            // 执行渲染，更新屏幕显示
-                            SDL_RenderPresent(renderer);
-                        }
-                    }
-                    
-                    av_packet_unref(packet);
-                }
+    int quit = 0;
+    while (!quit){
+        while (SDL_PollEvent(&e)){
+            if (e.type == SDL_QUIT){
+                quit = 1;
+                break;
             }
-
-        } else if (e.type == SDL_QUIT) {
-            goto __Destroy;
         }
     }
     
     
-//    int quit = 0;
-//    while (!quit){
-//        while (SDL_PollEvent(&e)){
-//            if (e.type == SDL_QUIT){
-//                quit = 1;
-//                break;
-//            } else {
-//
-//
-//
-//            }
-//        }
-//    }
-    
-        
-//    SDL_FreeSurface(bmp);
-//    bmp = NULL;
-    
-//    SDL_RenderClear(renderer);
-//    SDL_RenderCopy(renderer, texture, NULL, NULL);
-//    SDL_RenderPresent(renderer);
-    
-    
-//    SDL_Event e;
-//    int quit = 0;
-//    while (!quit){
-//        while (SDL_PollEvent(&e)){
-//            if (e.type == SDL_QUIT){
-//                quit = 1;
-//                break;
-//            }
-//        }
-//    }
-    
 __Destroy:
     
-    if (codec_ctx) {
-        avcodec_free_context(&codec_ctx);
-    }
-    
-    if (fmt_ctx) {
-        avformat_free_context(fmt_ctx);
+    if (outfile) {
+        fclose(outfile);
     }
     
     if (bmp) {
