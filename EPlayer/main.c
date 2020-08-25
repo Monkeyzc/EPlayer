@@ -155,7 +155,7 @@ void check_sdl_version() {
     SDL_Log("But we are linking against SDL version %d.%d.%d.\n", linked.major, linked.minor, linked.patch);
 }
 
-
+#pragma mark - Frame queue
 static int frame_queue_init(FrameQueue *f_q, PacketQueue *pkt_q, int max_size, int keep_last) {
     
     memset(f_q, 0, sizeof(FrameQueue));
@@ -185,6 +185,7 @@ static int frame_queue_init(FrameQueue *f_q, PacketQueue *pkt_q, int max_size, i
     return 0;
 }
 
+#pragma mark - Packet queue
 static int packet_queue_init(PacketQueue *pkt_q) {
     
     memset(pkt_q, 0, sizeof(PacketQueue));
@@ -348,13 +349,101 @@ static void decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, 
     d->pkt_serial = -1;
 }
 
+/**
+    启动解码
+ */
 static int decoder_start(Decoder *d, int (*fn)(void *), const char *thread_name, void* arg) {
     packet_queue_start(d->pkt_queue);
+    // 创建 解码线程
     d->decoder_tid = SDL_CreateThread(fn, thread_name, arg);
     if (!d->decoder_tid) {
         av_log(NULL, AV_LOG_ERROR, "SDL_CreateThread(): %s\n", SDL_GetError());
         return AVERROR(ENOMEM);
     }
+    return 0;
+}
+
+
+static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
+    
+    int ret = AVERROR(EAGAIN);
+    
+    for (; ; ) {
+        AVPacket pkt;
+        
+        if (d->pkt_queue->serial == d->pkt_serial) {
+            
+            do {
+                
+                // 中止
+                if (d->pkt_queue->abort_request) {
+                    return -1;
+                }
+                
+                switch (d->codec_ctx->codec_type) {
+                    case AVMEDIA_TYPE_AUDIO: {
+                        // 音频
+                        ret = avcodec_receive_frame(d->codec_ctx, frame);
+                        if (ret < 0) {
+                            char error[1024] = {0,};
+                            av_strerror(ret, error, 1024);
+                            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_frame error: %s\n", error);
+                        }
+                        
+                        if (ret >= 0) {
+                            // frame
+                            
+                            // 将 frame 写入到文件中
+                            int data_size = av_get_bytes_per_sample(d->codec_ctx->sample_fmt);
+
+                            for (int i = 0; i < frame->nb_samples; i++) { // 每个声道的采样个数
+                                for (int ch = 0; ch < d->codec_ctx->channels; ch++) { // 声道数
+                                    fwrite(frame->data[ch] + data_size * i, 1, data_size, outfile);
+                                    fflush(outfile);
+                                }
+                            }
+                        }
+                    }
+                        break;
+                    default:
+                        break;
+                }
+                
+                if (ret == AVERROR_EOF) {
+                    // 没有数据了
+                    return 0;
+                }
+                
+                if (ret >= 0) {
+                    return 1;
+                }
+                
+            } while (ret != AVERROR(EAGAIN));
+        }
+        
+        
+        do {
+            if (d->pkt_queue->nb_packets == 0) {
+                // pkt_queue中没有数据
+            }
+            
+            // 读取 packet
+            if (packet_queue_get(d->pkt_queue, &pkt, 1, &d->pkt_serial) < 0) {
+                return -1;
+            }
+            
+        } while (d->pkt_queue->serial != d->pkt_serial);
+        
+        // 发送packet数据包给解码器
+        int send_ret = avcodec_send_packet(d->codec_ctx, &pkt);
+        if (send_ret < 0) {
+            char error[1024] = {0,};
+            av_strerror(ret, error, 1024);
+            av_log(NULL, AV_LOG_ERROR, "send packet to codec error: %s\n", error);
+        }
+        av_packet_unref(&pkt);
+    }
+    
     return 0;
 }
 
@@ -369,45 +458,10 @@ static int audio_thread(void* arg) {
     AVFrame *frame = NULL;
     frame = av_frame_alloc();
     
-    while (1) {
-        ret = packet_queue_get(is->audio_decoder.pkt_queue, pkt, 1, &is->audio_decoder.pkt_serial);
-        if (ret < 0) {
-            break;
-        }
-        av_log(NULL, AV_LOG_DEBUG, "packet_queue_get: %p\n", pkt->data);
+    do {
+        decoder_decode_frame(&is->audio_decoder, frame, NULL);
+    } while (1);
         
-        av_log(NULL, AV_LOG_DEBUG, "packet_queue_get----: %p\n", &pkt);
-        ret = avcodec_send_packet(is->audio_decoder.codec_ctx, pkt);
-        
-        if (ret < 0) {
-            char error[1024] = {0,};
-            av_strerror(ret, error, 1024);
-            av_log(NULL, AV_LOG_ERROR, "send packet to codec error: %s\n", error);
-        }
-        
-        while (ret >= 0) {
-            ret = avcodec_receive_frame(is->audio_decoder.codec_ctx, frame);
-            
-            if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
-                break;
-            } else {
-                if (ret < 0) {
-                    av_log(NULL, AV_LOG_ERROR, "error during decoding\n");
-                    return 0;
-                }
-
-                int data_size = av_get_bytes_per_sample(is->audio_decoder.codec_ctx->sample_fmt);
-
-                for (int i = 0; i < frame->nb_samples; i++) { // 每个声道的采样个数
-                    for (int ch = 0; ch < is->audio_decoder.codec_ctx->channels; ch++) { // 声道数
-                        fwrite(frame->data[ch] + data_size * i, 1, data_size, outfile);
-                        fflush(outfile);
-                    }
-                }
-            }
-        }
-    }
-    
     return 0;
 }
 
