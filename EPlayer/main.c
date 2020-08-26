@@ -185,6 +185,28 @@ static int frame_queue_init(FrameQueue *f_q, PacketQueue *pkt_q, int max_size, i
     return 0;
 }
 
+static Frame *frame_queue_peek_writable(FrameQueue *f) {
+    
+    SDL_LockMutex(f->mutex);
+    if (f->size == f->max_size) {
+        av_log(NULL, AV_LOG_DEBUG, "frame_queue 满了");
+        SDL_CondWait(f->cond, f->mutex);
+    }
+    SDL_UnlockMutex(f->mutex);
+    
+    return &f->queue[f->write_index];
+}
+
+static void frame_queue_push(FrameQueue *f) {
+    if (++f->write_index == f->max_size) {
+        f->write_index = 0;
+    }
+    SDL_LockMutex(f->mutex);
+    f->size++;
+    SDL_CondSignal(f->cond);
+    SDL_UnlockMutex(f->mutex);
+}
+
 #pragma mark - Packet queue
 static int packet_queue_init(PacketQueue *pkt_q) {
     
@@ -392,7 +414,7 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                         
                         if (ret >= 0) {
                             // frame
-                            
+                            return 1;
                             // 将 frame 写入到文件中
                             int data_size = av_get_bytes_per_sample(d->codec_ctx->sample_fmt);
 
@@ -458,10 +480,26 @@ static int audio_thread(void* arg) {
     AVFrame *frame = NULL;
     frame = av_frame_alloc();
     
+    Frame *af_frame;
+    
     do {
-        decoder_decode_frame(&is->audio_decoder, frame, NULL);
-    } while (1);
+        ret = decoder_decode_frame(&is->audio_decoder, frame, NULL);
+        if (ret < 0) {
+            return ret;
+        }
         
+        while (1) {
+            if (!(af_frame = frame_queue_peek_writable(&is->audio_frame_queue))) {
+                goto __END_audio_thread;
+            }
+            
+            av_frame_move_ref(af_frame->frame, frame);
+            // 写入 frame queue
+            frame_queue_push(&is->audio_frame_queue);
+        }
+        
+    } while (1);
+__END_audio_thread:
     return 0;
 }
 
@@ -628,6 +666,11 @@ static void event_loop(PlayState *is) {
 }
 
 int main(int argc, const char * argv[]) {
+    
+    int index = 0;
+    printf("=======index: %d\n", index);
+    ++index < 0;
+    printf("=======index: %d\n", index);
     
     outfile = fopen(out_file_name, "wb");
     
