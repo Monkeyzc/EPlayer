@@ -17,16 +17,35 @@
 #include "avutil.h"
 #include "swscale.h"
 #include "imgutils.h"
+#include "avfilter.h"
+#include "buffersink.h"
+#include "buffersrc.h"
 
 #define VIDEO_PICTURE_QUEUE_SIZE 3
 #define SUBPICTURE_QUEUE_SIZE 16
 #define SAMPLE_QUEUE_SIZE 9
 #define FRAME_QUEUE_SIZE FFMAX(SAMPLE_QUEUE_SIZE, FFMAX(VIDEO_PICTURE_QUEUE_SIZE, SUBPICTURE_QUEUE_SIZE))
 
-int startup_volume = 100;
-static AVPacket flush_pkt;
+/* Minimum SDL audio buffer size, in samples. */
+#define SDL_AUDIO_MIN_BUFFER_SIZE 512
+/* Calculate actual buffer size keeping in mind not cause too frequent audio callbacks */
+#define SDL_AUDIO_MAX_CALLBACKS_PER_SEC 30
+
 const char *out_file_name = "/Users/zhaofei/Downloads/test_record_audio_aac_decode.pcm";
 FILE *outfile = NULL;
+
+int startup_volume = 100;
+static AVPacket flush_pkt;
+static SDL_AudioDeviceID audio_device_id;
+
+typedef struct AudioParams {
+    int freq;                   // 采样率
+    int channels;
+    int64_t channel_layout;
+    enum AVSampleFormat fmt;
+    int frame_size;             // 每个采样的大小
+    int bytes_per_sec;          // 每秒播放采样大小
+} AudioParams;
 
 typedef struct MyAVPacketList {
     AVPacket pkt;
@@ -50,6 +69,7 @@ typedef struct PacketQueue {
 
 typedef struct Frame {
     AVFrame *frame;
+    int serial;
     double pts;             /* presentation timestamp for the frame */
     double duration;
     int64_t pos;            /* byte position of the frame in the input file */
@@ -124,6 +144,19 @@ typedef struct PlayState {
     int audio_clock_serial;
     int audio_volume;
     
+    uint8_t *audio_buf;
+    uint8_t *audio_buf1;
+    
+    unsigned int audio_buf_size;    /* in bytes */
+    unsigned int audio_buf_size1;
+    
+    int audio_buf_index;            /* in bytes */
+    int auido_write_but_size;
+    
+    struct SwrContext *swr_ctx;
+    
+    AudioParams audio_tgt;
+    
     // video
     int video_stream_index;
     Decoder video_decoder;
@@ -185,11 +218,15 @@ static int frame_queue_init(FrameQueue *f_q, PacketQueue *pkt_q, int max_size, i
     return 0;
 }
 
+static void frame_queue_unref_item(Frame *vp) {
+    av_frame_unref(vp->frame);
+}
+
 static Frame *frame_queue_peek_writable(FrameQueue *f) {
     
     SDL_LockMutex(f->mutex);
     if (f->size == f->max_size) {
-        av_log(NULL, AV_LOG_DEBUG, "frame_queue 满了");
+//        av_log(NULL, AV_LOG_DEBUG, "frame_queue 满了\n");
         SDL_CondWait(f->cond, f->mutex);
     }
     SDL_UnlockMutex(f->mutex);
@@ -203,6 +240,31 @@ static void frame_queue_push(FrameQueue *f) {
     }
     SDL_LockMutex(f->mutex);
     f->size++;
+    SDL_CondSignal(f->cond);
+    SDL_UnlockMutex(f->mutex);
+}
+
+static Frame *frame_queue_peek_readable(FrameQueue *f) {
+    SDL_LockMutex(f->mutex);
+    while (f->size - f->rindex_shown <= 0) {
+        SDL_CondWait(f->cond, f->mutex);
+    }
+    SDL_UnlockMutex(f->mutex);
+    return &f->queue[(f->read_index + f->rindex_shown) % f->max_size];
+}
+
+static void frame_queue_next(FrameQueue *f) {
+    if (f->keep_last && !f->rindex_shown) {
+        f->rindex_shown = 1;
+        return;
+    }
+    frame_queue_unref_item(&f->queue[f->read_index]);
+    if (++f->read_index == f->max_size) {
+        f->read_index = 0;
+    }
+    SDL_LockMutex(f->mutex);
+    f->size--;
+//    av_log(NULL, AV_LOG_DEBUG, "frame_queue_next SDL_CondSignal: 通知 frame queue 空余出空间了\n");
     SDL_CondSignal(f->cond);
     SDL_UnlockMutex(f->mutex);
 }
@@ -224,13 +286,6 @@ static int packet_queue_init(PacketQueue *pkt_q) {
     
     return 0;
 }
-
-static void clock_init(Clock *c, int *queue_serial) {
-    c->speed = 1.0;
-    c->paused = 0;
-    c->queue_serial = queue_serial;
-}
-
 
 
 static int packet_queue_put_private(PacketQueue *q, AVPacket *pkt) {
@@ -362,6 +417,15 @@ static void packet_queue_start(PacketQueue *q) {
     SDL_UnlockMutex(q->mutex);
 }
 
+#pragma mark - Clock
+static void clock_init(Clock *c, int *queue_serial) {
+    c->speed = 1.0;
+    c->paused = 0;
+    c->queue_serial = queue_serial;
+}
+
+
+#pragma mark - Decoder
 static void decoder_init(Decoder *d, AVCodecContext *avctx, PacketQueue *queue, SDL_cond *empty_queue_cond) {
     memset(d, 0, sizeof(Decoder));
     d->codec_ctx = avctx;
@@ -406,13 +470,15 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                     case AVMEDIA_TYPE_AUDIO: {
                         // 音频
                         ret = avcodec_receive_frame(d->codec_ctx, frame);
+
                         if (ret < 0) {
                             char error[1024] = {0,};
                             av_strerror(ret, error, 1024);
-                            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_frame error: %s\n", error);
+//                            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_frame error: %s\n", error);
                         }
                         
                         if (ret >= 0) {
+//                            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_frame frame: %d\n", frame->sample_rate);
                             // frame
                             return 1;
                             // 将 frame 写入到文件中
@@ -458,6 +524,9 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
         
         // 发送packet数据包给解码器
         int send_ret = avcodec_send_packet(d->codec_ctx, &pkt);
+        if (send_ret == AVERROR(EAGAIN)) {
+            av_packet_move_ref(&d->pkt, &pkt);
+        }
         if (send_ret < 0) {
             char error[1024] = {0,};
             av_strerror(ret, error, 1024);
@@ -469,10 +538,216 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
     return 0;
 }
 
+/**
+    从frame_queue 中取出 frame 数据, 并重采样
+ */
+static int audio_decode_frame(PlayState *is) {
+    
+    int data_size, resample_data_size;
+    int64_t dec_channel_layout;
+    av_unused double audio_clock0;
+    int wanted_nb_samples;
+    Frame *af;
+    
+    do {
+        if (!(af = frame_queue_peek_readable(&is->audio_frame_queue))) {
+            return -1;
+        }
+        frame_queue_next(&is->audio_frame_queue);
+    } while (af->serial != is->audio_packet_queue.serial);
+    
+    data_size = av_samples_get_buffer_size(NULL, af->frame->channels, af->frame->nb_samples, af->frame->format, 1);
+    
+    // TODO: synchronize
+    wanted_nb_samples = af->frame->nb_samples;
+    
+    
+    if (af->frame->format == AV_SAMPLE_FMT_FLTP) {
+        av_log(NULL, AV_LOG_DEBUG, "AV_SAMPLE_FMT_FLTP\n");
+    }
+    
+    // 是否需要重采样
+    if (!is->swr_ctx) {
+        
+        is->swr_ctx = swr_alloc_set_opts(is->swr_ctx,
+                                         af->frame->channel_layout,
+                                         AV_SAMPLE_FMT_S16,
+                                         af->frame->sample_rate,
+                                         af->frame->channel_layout,
+                                         af->frame->format,
+                                         af->frame->sample_rate, 0, NULL);
+        swr_init(is->swr_ctx);
+    }
+    
+    const uint8_t **in = (const uint8_t **)af->frame->extended_data;
+    uint8_t **out = &is->audio_buf1;
+    // 重采样后的 nb_samples
+    int out_count = wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate + 256;
+    int out_size = av_samples_get_buffer_size(NULL, is->audio_tgt.channels, out_count, is->audio_tgt.fmt, 0);
+    int len2;
+    
+    if (wanted_nb_samples != af->frame->nb_samples) {
+        if (swr_set_compensation(is->swr_ctx, (wanted_nb_samples - af->frame->nb_samples) * is->audio_tgt.freq / af->frame->sample_rate, wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate) < 0) {
+            av_log(NULL, AV_LOG_DEBUG, "swr_set_compensation() failed\n");
+            return -1;
+        }
+    }
+    
+    av_fast_malloc(&is->audio_buf1, &is->audio_buf_size1, out_size);
+    if (!is->audio_buf1) {
+        return AVERROR(ENOMEM);
+    }
+    len2 = swr_convert(is->swr_ctx, out, out_count, in, af->frame->nb_samples);
+    if (len2 < 0) {
+        av_log(NULL, AV_LOG_ERROR, "swr_convert failed\n");
+        return -1;
+    }
+    
+    if (len2 == out_count) {
+        av_log(NULL, AV_LOG_WARNING, "audio buffer is probably too small\n");
+    }
+    
+    is->audio_buf = is->audio_buf1;
+    resample_data_size = len2 * is->audio_tgt.channels * av_get_bytes_per_sample(is->audio_tgt.fmt);
+    
+    // 不需要重采样
+//    is->audio_buf = af->frame->data[0];
+//    resample_data_size = data_size;
+//    printf("resample_data_size: %d\n", resample_data_size);
+    return resample_data_size;
+}
+
+/**
+    混音
+ */
+static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
+    PlayState *is = opaque;
+    int audio_size, len1;
+    
+//    av_log(NULL, AV_LOG_DEBUG, "sdl_audio_callback\n");
+    
+    while (len > 0) {
+        if (is->audio_buf_index >= is->audio_buf_size) {
+            // frame 数据
+            audio_size = audio_decode_frame(is);
+            if (audio_size < 0) {
+                /*  error */
+                is->audio_buf = NULL;
+                is->audio_buf_size = SDL_AUDIO_MIN_BUFFER_SIZE / is->audio_tgt.frame_size * is->audio_tgt.frame_size;
+            } else {
+                is->audio_buf_size = audio_size;
+            }
+            is->audio_buf_index = 0;
+        }
+        
+        len1 = is->audio_buf_size - is->audio_buf_index;
+        
+        if (len1 > len) {
+            len1 = len;
+        }
+        if (is->audio_buf) {
+            memset(stream, 0, len1);
+//            SDL_MixAudioFormat(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, AUDIO_S16SYS, len1, is->audio_volume);
+            SDL_MixAudio(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, len1, is->audio_volume);
+        }
+        
+        len -= len1;
+        stream += len1;
+        is->audio_buf_index += len1;
+    }
+    is->auido_write_but_size = is->auido_write_but_size - is->audio_buf_index;
+}
+
+/**
+    打开音频设备
+ */
+static int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb_channels, int wanted_sample_rate, struct AudioParams *audio_hw_params) {
+    
+    SDL_AudioSpec wanted_spec, spec;
+    const char *env;
+    
+    static const int next_nb_channels[] = {0, 0, 1, 6, 2, 6, 4, 6};             // ???
+    static const int next_sample_rates[] = {0, 44100, 48000, 96000, 192000};
+    int next_sample_rate_idx = FF_ARRAY_ELEMS(next_sample_rates) - 1;           // ???
+    
+    env = SDL_getenv("SDL_AUDIO_CHANNELS");
+    if (env) {
+        wanted_nb_channels = atoi(env);
+        wanted_channel_layout = av_get_default_channel_layout(wanted_nb_channels);
+    }
+    if (!wanted_channel_layout || wanted_nb_channels != av_get_channel_layout_nb_channels(wanted_channel_layout)) {
+        wanted_channel_layout = av_get_default_channel_layout(wanted_nb_channels);
+        wanted_channel_layout &= ~AV_CH_LAYOUT_STEREO_DOWNMIX;
+    }
+    
+    wanted_nb_channels = av_get_channel_layout_nb_channels(wanted_channel_layout);
+    wanted_spec.channels = wanted_nb_channels;
+    wanted_spec.freq = wanted_sample_rate;
+    
+    if (wanted_spec.freq <= 0 || wanted_spec.channels <= 0) {
+        av_log(NULL, AV_LOG_DEBUG, "Invalid sample rate or channel count\n");
+        return -1;
+    }
+    
+    // ???
+    while (next_sample_rate_idx && next_sample_rates[next_sample_rate_idx] >= wanted_spec.freq) {
+        next_sample_rate_idx--;
+    }
+    
+    wanted_spec.format = AUDIO_S16SYS;
+    wanted_spec.silence = 0;
+    wanted_spec.samples = FFMAX(SDL_AUDIO_MIN_BUFFER_SIZE, 2 << av_log2(wanted_spec.freq / SDL_AUDIO_MAX_CALLBACKS_PER_SEC));
+    wanted_spec.callback = sdl_audio_callback;
+    wanted_spec.userdata = opaque;
+    
+    
+    if (SDL_OpenAudio(&wanted_spec, &spec) < 0) {
+       av_log(NULL, AV_LOG_WARNING, "SDL_Open Audio (%d channels, %d Hz): %s\n", wanted_spec.channels, wanted_spec.freq, SDL_GetError());
+        return -1;
+    }
+    
+//    while (!(audio_device_id = SDL_OpenAudioDevice(NULL, 0, &wanted_spec, &spec, SDL_AUDIO_ALLOW_FREQUENCY_CHANGE | SDL_AUDIO_ALLOW_CHANNELS_CHANGE))) {
+//        av_log(NULL, AV_LOG_WARNING, "SDL_Open Audio (%d channels, %d Hz): %s\n", wanted_spec.channels, wanted_spec.freq, SDL_GetError());
+//
+//        wanted_spec.channels = next_nb_channels[FFMIN(7, wanted_spec.channels)];
+//        if (!wanted_spec.channels) {
+//            wanted_spec.freq = next_sample_rates[next_sample_rate_idx--];
+//            wanted_spec.channels = wanted_nb_channels;
+//            if (!wanted_spec.freq) {
+//                av_log(NULL, AV_LOG_ERROR, "NO more combinations to try, audio open failed\n");
+//                return -1;
+//            }
+//        }
+//        wanted_channel_layout = av_get_default_channel_layout(wanted_spec.channels);
+//    }
+//
+    if (spec.format != AUDIO_S16SYS) {
+        av_log(NULL, AV_LOG_ERROR, "SDL advised audio format %d is not supported!\n", spec.format);
+        return -1;
+    }
+    
+    if (spec.channels != wanted_spec.channels) {
+        wanted_channel_layout = av_get_default_channel_layout(spec.channels);
+        if (!wanted_channel_layout) {
+            av_log(NULL, AV_LOG_ERROR, "SDL advised audio channel count %d is not supported!\n", spec.channels);
+            return -1;
+        }
+    }
+    
+    audio_hw_params->fmt = AV_SAMPLE_FMT_S16;
+    audio_hw_params->freq = spec.freq;
+    audio_hw_params->channel_layout = wanted_channel_layout;
+    audio_hw_params->channels = spec.channels;
+    audio_hw_params->frame_size = av_samples_get_buffer_size(NULL, audio_hw_params->channels, 1, audio_hw_params->fmt, 1);
+    audio_hw_params->bytes_per_sec = av_samples_get_buffer_size(NULL, audio_hw_params->channels, audio_hw_params->freq, audio_hw_params->fmt, 1);
+    
+    return spec.size;
+}
+
 static int audio_thread(void* arg) {
     PlayState *is = arg;
     int ret = 0;
-    av_log(NULL, AV_LOG_DEBUG, "audio_thread arg: %p", arg);
+    av_log(NULL, AV_LOG_DEBUG, "audio_thread arg: %p\n", arg);
     
     AVPacket *pkt;
     pkt = av_packet_alloc();
@@ -483,26 +758,41 @@ static int audio_thread(void* arg) {
     Frame *af_frame;
     
     do {
+        
+        printf("audio_thread do while\n");
+        
         ret = decoder_decode_frame(&is->audio_decoder, frame, NULL);
         if (ret < 0) {
             return ret;
         }
-        
-        while (1) {
-            if (!(af_frame = frame_queue_peek_writable(&is->audio_frame_queue))) {
-                goto __END_audio_thread;
+        if (ret) {
+            while (frame->sample_rate) {
+                if (!(af_frame = frame_queue_peek_writable(&is->audio_frame_queue))) {
+                    goto __END_audio_thread;
+                }
+//                printf("=========================??????\n");
+                af_frame->serial = is->audio_decoder.pkt_serial;
+//                av_log(NULL, AV_LOG_DEBUG, "frame: %d\n", frame->sample_rate);
+                av_frame_move_ref(af_frame->frame, frame);
+                
+//                av_log(NULL, AV_LOG_DEBUG, "af_frame->frame: %d\n", af_frame->frame->sample_rate);
+                // 写入 frame queue
+                frame_queue_push(&is->audio_frame_queue);
+                if (is->audio_packet_queue.serial != is->audio_decoder.pkt_serial) {
+                    break;
+                }
             }
-            
-            av_frame_move_ref(af_frame->frame, frame);
-            // 写入 frame queue
-            frame_queue_push(&is->audio_frame_queue);
         }
-        
-    } while (1);
+                
+    } while (ret >=0 || ret == AVERROR(EAGAIN) || ret == AVERROR_EOF);
+    
 __END_audio_thread:
+    av_frame_free(&frame);
+    
     return 0;
 }
 
+#pragma mark - stream compnent open
 static int stream_component_open(PlayState *is, int stream_index) {
     int ret = 0;
     AVFormatContext *fmt_ctx = is->fmt_ctx;
@@ -530,9 +820,16 @@ static int stream_component_open(PlayState *is, int stream_index) {
     // 打开解码器
     avcodec_open2(is->audio_decoder.codec_ctx, codec, NULL);
     
+    // prepare audio ouput
+    if ((ret = audio_open(is, codec_ctx->channel_layout, codec_ctx->channels, codec_ctx->sample_rate, &is->audio_tgt)) < 0) {
+        return -1;
+    }
+    
     decoder_init(&is->audio_decoder, codec_ctx, &is->audio_packet_queue, is->continue_read_thread);
     // 开始解码
     decoder_start(&is->audio_decoder, audio_thread, "audio_decoder", is);
+    
+    SDL_PauseAudio(0);
     
     return 0;
 }
@@ -549,6 +846,8 @@ static int read_thread(void *arg) {
     AVFormatContext *fmt_ctx;
     AVPacket pkt1, *pkt = &pkt1;
     
+    avformat_network_init();
+    
     fmt_ctx = avformat_alloc_context();
     if (!fmt_ctx) {
         av_log(NULL, AV_LOG_FATAL, "Could not alloc AVFrameContext\n");
@@ -559,7 +858,9 @@ static int read_thread(void *arg) {
     
     ret = avformat_open_input(&fmt_ctx, is->filename, is->input_fmt, NULL);
     if (ret < 0) {
-        av_log(NULL, AV_LOG_FATAL, "Could not open avformat_open_input\n");
+        char error[1024] = {0, };
+        av_strerror(ret, error, 1024);
+        av_log(NULL, AV_LOG_FATAL, "Could not open avformat_open_input: %s\n", error);
         goto __Fail;
     }
     
@@ -599,6 +900,7 @@ static int read_thread(void *arg) {
             // 将 packet 写入到 audio_packet_queue中
             packet_queue_put(&is->audio_packet_queue, pkt);
         }
+        
     }
     
 __Fail:
@@ -667,11 +969,6 @@ static void event_loop(PlayState *is) {
 
 int main(int argc, const char * argv[]) {
     
-    int index = 0;
-    printf("=======index: %d\n", index);
-    ++index < 0;
-    printf("=======index: %d\n", index);
-    
     outfile = fopen(out_file_name, "wb");
     
     // SDL
@@ -681,7 +978,10 @@ int main(int argc, const char * argv[]) {
     SDL_Texture *texture = NULL;
     SDL_Thread *sdl_refresh_thread = NULL;
     
-    const char *input_filename = "/Users/zhaofei/Desktop/test_record_audio_aac.aac";
+    const char *input_filename = "http://ivi.bupt.edu.cn/hls/cctv1hd.m3u8";
+//    "/Users/zhaofei/Desktop/filter.aac";
+//    "http://ivi.bupt.edu.cn/hls/cctv1hd.m3u8";
+//    "/Users/zhaofei/Desktop/out.mp3";
     
     set_av_log_level_and_check_ffmpeg_version();
     check_sdl_version();
@@ -691,6 +991,11 @@ int main(int argc, const char * argv[]) {
     
     PlayState *is;
     is = stream_open(input_filename, NULL);
+    
+    if (SDL_Init(SDL_INIT_AUDIO) != 0) {
+        SDL_Log("Unable to initialize SDL: %s", SDL_GetError());
+        goto __Destroy;
+    }
     
     // 窗口
     window = SDL_CreateWindow("Hello world", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE);
@@ -737,6 +1042,7 @@ int main(int argc, const char * argv[]) {
         while (SDL_PollEvent(&e)){
             if (e.type == SDL_QUIT){
                 quit = 1;
+                goto __Destroy;
                 break;
             }
         }
