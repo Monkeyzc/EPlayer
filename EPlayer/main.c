@@ -8,7 +8,18 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+
+// std image
+#define STB_IMAGE_IMPLEMENTATION
+#include "std_image.h"
+
 #include "SDL.h"
+
+// glad
+#include "glad.h"
+
+// glfw
+#include "glfw3.h"
 
 #include "avdevice.h"
 #include "avformat.h"
@@ -31,12 +42,14 @@
 /* Calculate actual buffer size keeping in mind not cause too frequent audio callbacks */
 #define SDL_AUDIO_MAX_CALLBACKS_PER_SEC 30
 
+
+int picture_index = 0;
+
 const char *out_file_name = "/Users/zhaofei/Downloads/test_record_audio_aac_decode.pcm";
 FILE *outfile = NULL;
 
 int startup_volume = 100;
 static AVPacket flush_pkt;
-static SDL_AudioDeviceID audio_device_id;
 
 typedef struct AudioParams {
     int freq;                   // 采样率
@@ -164,6 +177,9 @@ typedef struct PlayState {
     FrameQueue video_frame_queue;
     Clock video_clock;
     
+    int width, height;
+    struct SwsContext *sws_scaler_ctx;
+    
     // SDL
     SDL_Thread *read_tid;
     SDL_cond *continue_read_thread;
@@ -267,6 +283,15 @@ static void frame_queue_next(FrameQueue *f) {
 //    av_log(NULL, AV_LOG_DEBUG, "frame_queue_next SDL_CondSignal: 通知 frame queue 空余出空间了\n");
     SDL_CondSignal(f->cond);
     SDL_UnlockMutex(f->mutex);
+}
+
+static int frame_queue_nb_remaining(FrameQueue *f) {
+//    printf("frame_queue_nb_remaining: %d\n", f->size);
+    return f->size - f->rindex_shown;
+}
+
+static Frame *frame_queue_peek_last(FrameQueue *f) {
+    return &f->queue[f->read_index];
 }
 
 #pragma mark - Packet queue
@@ -472,40 +497,51 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                         ret = avcodec_receive_frame(d->codec_ctx, frame);
 
                         if (ret < 0) {
-                            char error[1024] = {0,};
-                            av_strerror(ret, error, 1024);
-//                            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_frame error: %s\n", error);
+//                            char error[1024] = {0,};
+//                            av_strerror(ret, error, 1024);
+//                            av_log(NULL, AV_LOG_ERROR, "audio avcodec_receive_frame error: %s\n", error);
+                        }
+
+                        
+                        if (ret == AVERROR_EOF) {
+                            // 没有数据了
+                            d->finished = d->pkt_serial;
+                            avcodec_flush_buffers(d->codec_ctx);
+                            return 0;
                         }
                         
                         if (ret >= 0) {
-//                            av_log(NULL, AV_LOG_ERROR, "avcodec_receive_frame frame: %d\n", frame->sample_rate);
-                            // frame
+                            printf("AVMEDIA_TYPE_AUDIO avcodec_receive_frame\n");
                             return 1;
-                            // 将 frame 写入到文件中
-                            int data_size = av_get_bytes_per_sample(d->codec_ctx->sample_fmt);
-
-                            for (int i = 0; i < frame->nb_samples; i++) { // 每个声道的采样个数
-                                for (int ch = 0; ch < d->codec_ctx->channels; ch++) { // 声道数
-                                    fwrite(frame->data[ch] + data_size * i, 1, data_size, outfile);
-                                    fflush(outfile);
-                                }
-                            }
                         }
+
+                    }
+                        break;
+                    case AVMEDIA_TYPE_VIDEO: {
+                        ret = avcodec_receive_frame(d->codec_ctx, frame);
+                        
+                        if (ret < 0) {
+                            char error[1024] = {0,};
+                            av_strerror(ret, error, 1024);
+                            av_log(NULL, AV_LOG_ERROR, "video avcodec_receive_frame error: %s\n", error);
+                        }
+                        if (ret == AVERROR_EOF) {
+                            // 没有数据了
+                            d->finished = d->pkt_serial;
+                            avcodec_flush_buffers(d->codec_ctx);
+                            return 0;
+                        }
+                        
+                        if (ret >= 0) {
+                            printf("AVMEDIA_TYPE_VIDEO avcodec_receive_frame: %d\n", frame->pict_type);
+                            return 1;
+                        }
+
                     }
                         break;
                     default:
                         break;
                 }
-                
-                if (ret == AVERROR_EOF) {
-                    // 没有数据了
-                    return 0;
-                }
-                
-                if (ret >= 0) {
-                    return 1;
-                }
-                
             } while (ret != AVERROR(EAGAIN));
         }
         
@@ -513,6 +549,7 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
         do {
             if (d->pkt_queue->nb_packets == 0) {
                 // pkt_queue中没有数据
+                SDL_CondSignal(d->empty_queue_cond);
             }
             
             // 读取 packet
@@ -522,22 +559,30 @@ static int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
             
         } while (d->pkt_queue->serial != d->pkt_serial);
         
-        // 发送packet数据包给解码器
-        int send_ret = avcodec_send_packet(d->codec_ctx, &pkt);
-        if (send_ret == AVERROR(EAGAIN)) {
-            av_packet_move_ref(&d->pkt, &pkt);
+        
+        if (pkt.data == flush_pkt.data) {
+            avcodec_flush_buffers(d->codec_ctx);
+            d->finished = 0;
+        } else {
+            
+            // 发送packet数据包给解码器
+            int send_ret = avcodec_send_packet(d->codec_ctx, &pkt);
+            if (send_ret == AVERROR(EAGAIN)) {
+                av_packet_move_ref(&d->pkt, &pkt);
+            }
+            if (send_ret < 0) {
+                char error[1024] = {0,};
+                av_strerror(ret, error, 1024);
+                av_log(NULL, AV_LOG_ERROR, "send packet to codec error: %s\n", error);
+            }
+            av_packet_unref(&pkt);
         }
-        if (send_ret < 0) {
-            char error[1024] = {0,};
-            av_strerror(ret, error, 1024);
-            av_log(NULL, AV_LOG_ERROR, "send packet to codec error: %s\n", error);
-        }
-        av_packet_unref(&pkt);
     }
     
     return 0;
 }
 
+#pragma mark - Audio S
 /**
     从frame_queue 中取出 frame 数据, 并重采样
  */
@@ -560,11 +605,7 @@ static int audio_decode_frame(PlayState *is) {
     
     // TODO: synchronize
     wanted_nb_samples = af->frame->nb_samples;
-    
-    
-    if (af->frame->format == AV_SAMPLE_FMT_FLTP) {
-        av_log(NULL, AV_LOG_DEBUG, "AV_SAMPLE_FMT_FLTP\n");
-    }
+//    printf("audio frame: %p\n", af->frame);
     
     // 是否需要重采样
     if (!is->swr_ctx) {
@@ -758,24 +799,17 @@ static int audio_thread(void* arg) {
     Frame *af_frame;
     
     do {
-        
-        printf("audio_thread do while\n");
-        
         ret = decoder_decode_frame(&is->audio_decoder, frame, NULL);
         if (ret < 0) {
-            return ret;
+            goto __END_audio_thread;
         }
         if (ret) {
             while (frame->sample_rate) {
                 if (!(af_frame = frame_queue_peek_writable(&is->audio_frame_queue))) {
                     goto __END_audio_thread;
                 }
-//                printf("=========================??????\n");
                 af_frame->serial = is->audio_decoder.pkt_serial;
-//                av_log(NULL, AV_LOG_DEBUG, "frame: %d\n", frame->sample_rate);
                 av_frame_move_ref(af_frame->frame, frame);
-                
-//                av_log(NULL, AV_LOG_DEBUG, "af_frame->frame: %d\n", af_frame->frame->sample_rate);
                 // 写入 frame queue
                 frame_queue_push(&is->audio_frame_queue);
                 if (is->audio_packet_queue.serial != is->audio_decoder.pkt_serial) {
@@ -791,6 +825,117 @@ __END_audio_thread:
     
     return 0;
 }
+#pragma mark - Audio E
+
+
+#pragma mark - Video S
+
+static int video_refresh(PlayState *is, double *remaining_time, uint8_t *frame_buffer) {
+    
+    Frame *vp;
+    AVFrame *av_frame;
+    
+    if (frame_queue_nb_remaining(&is->video_frame_queue) == 0) {
+        // nothing to do
+        av_log(NULL, AV_LOG_DEBUG, "video_frame_queue is empty\n");
+        return -1;
+    } else {
+        do {
+            if (!(vp = frame_queue_peek_readable(&is->video_frame_queue))) {
+                av_log(NULL, AV_LOG_ERROR, "video frame_queue_peek_readable is NULL\n");
+                return -1;
+            }
+            frame_queue_next(&is->video_frame_queue);
+        } while (vp->serial != is->video_packet_queue.serial);
+        
+        av_frame = vp->frame;
+        enum AVPictureType pict_type = av_frame->pict_type;
+        
+        switch (pict_type) {
+            case AV_PICTURE_TYPE_NONE:
+                av_log(NULL, AV_LOG_DEBUG, "pict_type: 未知\n");
+                break;
+            case AV_PICTURE_TYPE_I:
+                av_log(NULL, AV_LOG_DEBUG, "pict_type: I 帧\n");
+                break;
+            case AV_PICTURE_TYPE_B:
+                av_log(NULL, AV_LOG_DEBUG, "pict_type: B 帧\n");
+                break;
+            case AV_PICTURE_TYPE_P:
+                av_log(NULL, AV_LOG_DEBUG, "pict_type: P 帧\n");
+                break;
+            default:
+                break;
+        }
+        
+        if (pict_type == AV_PICTURE_TYPE_NONE) {
+            return -1;
+        }
+        
+        if (!is->sws_scaler_ctx) {
+            is->sws_scaler_ctx = sws_getContext(av_frame->width, av_frame->height, is->video_decoder.codec_ctx->pix_fmt,
+                                                av_frame->width, av_frame->height, AV_PIX_FMT_RGB0,
+                                                SWS_BILINEAR, NULL, NULL, NULL);
+        }
+        
+        if (!is->sws_scaler_ctx) {
+            av_log(NULL, AV_LOG_ERROR, "iss->sws_scaler_ctx is NUll\n");
+            return -1;
+        }
+        
+        uint8_t* dest[4] = {frame_buffer, NULL, NULL, NULL};
+        int dest_linesize[4] = {av_frame->width * 4, 0, 0, 0};
+        if(sws_scale(is->sws_scaler_ctx, (const uint8_t * const *)av_frame->data, av_frame->linesize, 0, av_frame->height, dest, dest_linesize) >= 0) {
+            av_log(NULL, AV_LOG_DEBUG, "sws_scale success\n");
+            return 0;
+        } else {
+            av_log(NULL, AV_LOG_DEBUG, "sws_scale failed\n");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+static int video_thread(void *arg) {
+    
+    int ret = 0;
+    PlayState *is = arg;
+    AVFrame *frame = av_frame_alloc();
+    Frame *vp_frame;
+    
+    if (!frame) {
+        return AVERROR(ENOMEM);
+    }
+    
+    do {
+        ret = decoder_decode_frame(&is->video_decoder, frame, NULL);
+        if (ret < 0) {
+            return ret;
+        }
+//        av_log(NULL, AV_LOG_INFO, "Video frame width: %d, height: %d\n", frame->width, frame->height);
+        if (ret) {
+            while (frame->width) {
+                if (!(vp_frame = frame_queue_peek_writable(&is->video_frame_queue))) {
+                    return -1;
+                }
+
+                vp_frame->serial = is->video_decoder.pkt_serial;
+                av_frame_move_ref(vp_frame->frame, frame);
+
+                // 写入 frame queue
+                frame_queue_push(&is->video_frame_queue);
+                if (is->video_packet_queue.serial != is->video_decoder.pkt_serial) {
+                    break;
+                }
+            }
+        }
+        
+    } while (ret >= 0 || ret == AVERROR(EAGAIN) || ret == AVERROR_EOF);
+      
+    av_frame_free(&frame);
+    return 0;
+}
+#pragma mark - Video E
 
 #pragma mark - stream compnent open
 static int stream_component_open(PlayState *is, int stream_index) {
@@ -809,7 +954,6 @@ static int stream_component_open(PlayState *is, int stream_index) {
         av_log(NULL, AV_LOG_FATAL, "Fail avcodec_parameters_to_context");
         return ret;
     }
-    is->audio_decoder.codec_ctx = codec_ctx;
     
     codec = avcodec_find_decoder(codec_ctx->codec_id);
     if (!codec) {
@@ -818,19 +962,38 @@ static int stream_component_open(PlayState *is, int stream_index) {
     }
     
     // 打开解码器
-    avcodec_open2(is->audio_decoder.codec_ctx, codec, NULL);
-    
-    // prepare audio ouput
-    if ((ret = audio_open(is, codec_ctx->channel_layout, codec_ctx->channels, codec_ctx->sample_rate, &is->audio_tgt)) < 0) {
+    if (avcodec_open2(codec_ctx, codec, NULL) < 0) {
+        av_log(NULL, AV_LOG_ERROR, "avcodec_open2 failed\n");
         return -1;
+    };
+    
+    switch (codec_ctx->codec_type) {
+        case AVMEDIA_TYPE_AUDIO: {
+            is->audio_decoder.codec_ctx = codec_ctx;
+            // prepare audio ouput
+            if ((ret = audio_open(is, codec_ctx->channel_layout, codec_ctx->channels, codec_ctx->sample_rate, &is->audio_tgt)) < 0) {
+                return -1;
+            }
+            decoder_init(&is->audio_decoder, codec_ctx, &is->audio_packet_queue, is->continue_read_thread);
+            // 开始解码
+            if (decoder_start(&is->audio_decoder, audio_thread, "audio_decoder", is) < 0) {
+                goto __OUT;
+            };
+            SDL_PauseAudio(0);
+        }
+            break;
+        case AVMEDIA_TYPE_VIDEO: {
+            is->video_decoder.codec_ctx = codec_ctx;
+            decoder_init(&is->video_decoder, codec_ctx, &is->video_packet_queue, is->continue_read_thread);
+            if (decoder_start(&is->video_decoder, video_thread, "video_thread", is) < 0) {
+                goto __OUT;
+            }
+        }
+            break;
+        default:
+            break;
     }
-    
-    decoder_init(&is->audio_decoder, codec_ctx, &is->audio_packet_queue, is->continue_read_thread);
-    // 开始解码
-    decoder_start(&is->audio_decoder, audio_thread, "audio_decoder", is);
-    
-    SDL_PauseAudio(0);
-    
+__OUT:
     return 0;
 }
 
@@ -870,19 +1033,26 @@ static int read_thread(void *arg) {
         goto __Fail;
     }
     
+    // audio
     int auido_stream_index = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
-    if (auido_stream_index < 0) {
-        av_log(NULL, AV_LOG_FATAL, "Could not find audio stream\n");
-        goto __Fail;
-    }
     is->auido_stream_index = auido_stream_index;
+    
+    // video
+    int video_stream_index = av_find_best_stream(fmt_ctx, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+    is->video_stream_index = video_stream_index;
+    
+    if (is->auido_stream_index >= 0) {
+        stream_component_open(is, is->auido_stream_index);
+    }
+    
+    if (is->video_stream_index >= 0) {
+        stream_component_open(is, is->video_stream_index);
+    }
     
     if (!pkt) {
         av_log(NULL, AV_LOG_FATAL, "Could not alloc packet\n");
         goto __Fail;
     }
-    
-    stream_component_open(is, is->auido_stream_index);
     
     while (1) {
         ret = av_read_frame(fmt_ctx, pkt);
@@ -894,18 +1064,20 @@ static int read_thread(void *arg) {
                 goto __Fail;
             }
         } else {
-            av_log(NULL, AV_LOG_DEBUG, "pkt: %p\n", pkt->data);
-            av_log(NULL, AV_LOG_DEBUG, "pkt-----: %p\n", pkt);
-            
             // 将 packet 写入到 audio_packet_queue中
-            packet_queue_put(&is->audio_packet_queue, pkt);
+            
+            if (pkt->stream_index == is->auido_stream_index) {
+                packet_queue_put(&is->audio_packet_queue, pkt);
+            }
+            else if (pkt->stream_index == is->video_stream_index) {
+                packet_queue_put(&is->video_packet_queue, pkt);
+            }
         }
-        
     }
     
 __Fail:
     if (fmt_ctx) {
-        avformat_free_context(fmt_ctx);
+        avformat_close_input(&fmt_ctx);
     }
     return ret;
 }
@@ -928,8 +1100,16 @@ static PlayState *stream_open(const char *filename, AVInputFormat *input_fmt) {
         return NULL;
     }
     
+    if (frame_queue_init(&is->video_frame_queue, &is->video_packet_queue, VIDEO_PICTURE_QUEUE_SIZE, 1) < 0) {
+        return NULL;
+    }
+    
     // Packet Queue
     if (packet_queue_init(&is->audio_packet_queue) < 0) {
+        return NULL;
+    }
+    
+    if (packet_queue_init(&is->video_packet_queue) < 0) {
         return NULL;
     }
     
@@ -953,32 +1133,72 @@ static PlayState *stream_open(const char *filename, AVInputFormat *input_fmt) {
     startup_volume = av_clip_c(SDL_MIX_MAXVOLUME * startup_volume / 100, 0, SDL_MIX_MAXVOLUME);
     is->audio_volume = startup_volume;
     
-    
     // read_thread
     is->read_tid = SDL_CreateThread(read_thread, filename, is);
     
-    
-    return NULL;
+    return is;
 }
 
-static void event_loop(PlayState *is) {
-    SDL_Event e;
-    
+void error_callback(int error, const char *description) {
+    printf("error_callback: error: %d, description: %s\n", error, description);
+}
+
+/*
+ 每当窗口改变大小，GLFW会调用这个函数并填充相应的参数供你处理
+ 当窗口被第一次显示的时候framebuffer_size_callback也会被调用
+ */
+void frame_buffersize_callback(GLFWwindow *window, int width, int height) {
+    glViewport(0, 0, width, height);
     
 }
+
+// 输入处理函数
+void processInput(GLFWwindow* window) {
+    if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
+        glfwSetWindowShouldClose(window, 1);
+    }
+}
+
+float mixValue = 0.2;
+
+const char *vertexShaderSource = "#version 330 core\n"
+    "layout (location = 0) in vec3 aPos;\n"
+    "layout (location = 1) in vec3 aColor;\n"
+    "layout (location = 2) in vec2 aTexCoord;\n"
+    "out vec3 outColor;\n"
+    "out vec2 TexCoord;\n"
+    "void main()\n"
+    "{\n"
+    "   gl_Position = vec4(aPos.x, -aPos.y, aPos.z, 1.0);\n" // 翻转Y
+    "   outColor = aColor;\n"
+    "   TexCoord = aTexCoord;\n"
+    "}\n";
+
+const char *fragmentShaderSource = "#version 330 core\n"
+    "out vec4 FragColor;\n"
+    "in vec3 outColor;\n"
+    "in vec2 TexCoord;\n"
+    "uniform float mixValue;\n"
+    "uniform sampler2D texture1;\n"
+    "void main()\n"
+    "{\n"
+    "   FragColor = texture(texture1, TexCoord) * vec4(outColor, 1.0);\n"
+    "}\n";
+
+// * vec4(outColor, 1.0)
 
 int main(int argc, const char * argv[]) {
     
     outfile = fopen(out_file_name, "wb");
+        
+    int width = 1920;
+    int height = 1080;
     
-    // SDL
-    SDL_Window *window = NULL;
-    SDL_Renderer *renderer = NULL;
-    SDL_Surface *bmp = NULL;
-    SDL_Texture *texture = NULL;
-    SDL_Thread *sdl_refresh_thread = NULL;
+    int success = 0;
+    char infoLog[1024] = {0, };
     
-    const char *input_filename = "http://ivi.bupt.edu.cn/hls/cctv1hd.m3u8";
+    const char *input_filename = "/Users/zhaofei/Desktop/1-2 课程介绍及学习指导.mp4";
+//    "/Users/zhaofei/Desktop/small_bunny_1080p_30fps.mp4";
 //    "/Users/zhaofei/Desktop/filter.aac";
 //    "http://ivi.bupt.edu.cn/hls/cctv1hd.m3u8";
 //    "/Users/zhaofei/Desktop/out.mp3";
@@ -992,85 +1212,173 @@ int main(int argc, const char * argv[]) {
     PlayState *is;
     is = stream_open(input_filename, NULL);
     
-    if (SDL_Init(SDL_INIT_AUDIO) != 0) {
-        SDL_Log("Unable to initialize SDL: %s", SDL_GetError());
-        goto __Destroy;
+    GLFWwindow *window;
+    int vertexShader;
+    int fragmentShader;
+    int shaderProgram;
+    
+    // 初始化
+    unsigned int VBO, VAO, EBO;
+    
+    // 纹理
+    unsigned int texture;
+    
+    float vertices[] = {
+        // --- 位置 ---          --- 颜色 ---      --- 纹理坐标 ---
+        1.0f,   1.0f, 0.0f,  1.0f, 0.0f, 0.0f,      1.0f, 1.0f,                      // right top
+        1.0f,   -1.0f, 0.0f,  0.0f, 1.0f, 0.0f,      1.0f, 0.0f,                      // right bottom
+        -1.0f,   -1.0f, 0.0f,  0.0f, 0.0f, 1.0f,      0.0f, 0.0f,                       // left bottom
+        -1.0f,   1.0f, 0.0f,  1.0f, 1.0f, 0.0f,      0.0f, 1.0f,                      // left top
+    };
+    
+    unsigned int indices[] = {
+        0, 1, 3,
+        1, 2, 3
+    };
+    
+    if (!glfwInit()) {
+        printf("glfw init failed!\n");
+        return 0;
     }
     
-    // 窗口
-    window = SDL_CreateWindow("Hello world", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, 640, 480, SDL_WINDOW_OPENGL | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_RESIZABLE);
+    // 告诉GLFW我们要使用的OpenGL版本是3.3
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    // 告诉GLFW我们使用的是核心模式(Core-profile)
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     
+    // MAC OS
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
+    
+    glfwWindowHint(GLFW_SAMPLES, 4);
+    
+    glfwSetErrorCallback(error_callback);
+    
+    window = glfwCreateWindow(width, height, "Hello world", NULL, NULL);
     if (!window) {
-        SDL_Log("Could not create window: %s", SDL_GetError());
+        printf("create window failed\n");
         goto __Destroy;
     }
     
-    /**
-     渲染器
-     index: -1, SDL自动选择适合我们指定的选项的驱动
-     flag:
-        SDL_RENDERER_ACCELERATED: 硬件加速的renderer
-        SDL_RENDERER_PRESENTVSYNC: 显示器的刷新率来更新画面
-     */
-    renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    glfwMakeContextCurrent(window);
+    
+    // GLAD是用来管理OpenGL的函数指针的, 所以在调用任何OpenGL的函数之前我们需要初始化GLAD
+    // glad初始化
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress)) {
+        printf("加载失败");
+        goto __Destroy;
+    }
+    
+    glfwSetFramebufferSizeCallback(window, frame_buffersize_callback);
+    
 
-    if (!renderer) {
-        SDL_Log("Could not create renderer: %s", SDL_GetError());
+    // vertex shafer
+    vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+    glCompileShader(vertexShader);
+    // check
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(vertexShader, 1024, NULL, infoLog);
+        printf("vertexShader glGetShaderiv error: %s\n", infoLog);
         goto __Destroy;
     }
 
-
-    bmp = SDL_LoadBMP("/Users/zhaofei/Desktop/1598025169612.bmp");
-    if (!bmp) {
-        SDL_Log("load bmp fail: %s", SDL_GetError());
+    // fragment shader
+    fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fragmentShader);
+    // check
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(fragmentShader, 1024, NULL, infoLog);
+        printf("fragmentShader glGetShaderiv error: %s\n", infoLog);
         goto __Destroy;
     }
 
-    texture = SDL_CreateTextureFromSurface(renderer, bmp);
-    
-    SDL_FreeSurface(bmp);
-    bmp = NULL;
-    
-    SDL_RenderClear(renderer);
-    SDL_RenderCopy(renderer, texture, NULL, NULL);
-    SDL_RenderPresent(renderer);
-    
-    
-    SDL_Event e;
-    int quit = 0;
-    while (!quit){
-        while (SDL_PollEvent(&e)){
-            if (e.type == SDL_QUIT){
-                quit = 1;
-                goto __Destroy;
-                break;
-            }
+    // link shaders
+    shaderProgram = glCreateProgram();
+    glAttachShader(shaderProgram, vertexShader);
+    glAttachShader(shaderProgram, fragmentShader);
+    glLinkProgram(shaderProgram);
+    // check
+    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
+    if (!success) {
+        glGetShaderInfoLog(shaderProgram, 1024, NULL, infoLog);
+        printf("shaderProgram glGetProgramiv error: %s\n", infoLog);
+        goto __Destroy;
+    }
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    glGenVertexArrays(1, &VAO);
+    glGenBuffers(1, &VBO);
+    glGenBuffers(1, &EBO);
+
+    // 绑定VAO
+    glBindVertexArray(VAO);
+
+    // 把顶点数组复制到缓冲中, 供OpenGL使用
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
+
+    // 顶点
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 *sizeof(float), (void *)0);
+    glEnableVertexAttribArray(0);
+
+    // 颜色
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 *sizeof(float), (void *)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+
+    // 纹理坐标
+    glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 *sizeof(float), (void *)(6 * sizeof(float)));
+    glEnableVertexAttribArray(2);
+
+    // texture1
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    // 纹理环绕方式
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    // 当进行放大 Magnify 和 缩小 Minify 操作, 设置的纹理过滤选项, 领近过滤/线性过滤
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+
+    uint8_t *frame_data;
+    frame_data = malloc(1920*1080*4);
+
+    while (!glfwWindowShouldClose(window)) {
+        // 输入处理
+        processInput(window);
+        
+        // 渲染指令
+        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT);
+        
+        if (video_refresh(is, 0, frame_data) >= 0) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1920, 1080, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame_data);
+            glGenerateMipmap(GL_TEXTURE_2D);
         }
+        
+        glUseProgram(shaderProgram);
+        glBindVertexArray(VAO);
+        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+
+        
+        //glfwSwapBuffers函数会交换颜色缓冲（它是一个储存着GLFW窗口每一个像素颜色值的大缓冲），它在这一迭代中被用来绘制，并且将会作为输出显示在屏幕上
+        glfwSwapBuffers(window);
+        // 事件处理
+        glfwPollEvents();
     }
-    
     
 __Destroy:
     
     if (outfile) {
         fclose(outfile);
     }
-    
-    if (bmp) {
-        SDL_FreeSurface(bmp);
-    }
-    
-    if (texture) {
-        SDL_DestroyTexture(texture);
-    }
-    
-    if (renderer) {
-        SDL_DestroyRenderer(renderer);
-    }
-    
-    if (window) {
-        SDL_DestroyWindow(window);
-    }
-    SDL_Quit();
     
     return 0;
 }

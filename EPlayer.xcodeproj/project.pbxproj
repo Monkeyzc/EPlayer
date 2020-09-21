@@ -37,17 +37,27 @@
 		A41B617224F0101900A138BE /* libSDL2.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = A41B615524F0101900A138BE /* libSDL2.dylib */; };
 		A41B617324F0101900A138BE /* libSDL2.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A41B615624F0101900A138BE /* libSDL2.a */; };
 		A41B617424F0101900A138BE /* libSDL2_test.a in Frameworks */ = {isa = PBXBuildFile; fileRef = A41B615724F0101900A138BE /* libSDL2_test.a */; };
+		A41FA4A925184AB40073E79D /* container.jpg in CopyFiles */ = {isa = PBXBuildFile; fileRef = A41FA4A625184AA70073E79D /* container.jpg */; };
+		A41FA4AA25184AB40073E79D /* awesomeface-1.png in CopyFiles */ = {isa = PBXBuildFile; fileRef = A41FA4A725184AA70073E79D /* awesomeface-1.png */; };
+		A41FA4AB25184AB40073E79D /* awesomeface.png in CopyFiles */ = {isa = PBXBuildFile; fileRef = A41FA4A825184AA70073E79D /* awesomeface.png */; };
+		A479372F2513BC8A0073333E /* libglfw.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = A47937242513BC8A0073333E /* libglfw.dylib */; };
+		A47937302513BC8A0073333E /* libglfw.3.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = A47937252513BC8A0073333E /* libglfw.3.dylib */; };
+		A47937312513BC8A0073333E /* libglfw.3.3.dylib in Frameworks */ = {isa = PBXBuildFile; fileRef = A47937262513BC8A0073333E /* libglfw.3.3.dylib */; };
+		A47937322513BC8A0073333E /* glad.c in Sources */ = {isa = PBXBuildFile; fileRef = A479372E2513BC8A0073333E /* glad.c */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
 		A41B605424F00FEE00A138BE /* CopyFiles */ = {
 			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = /usr/share/man/man1/;
-			dstSubfolderSpec = 0;
+			buildActionMask = 12;
+			dstPath = assert;
+			dstSubfolderSpec = 7;
 			files = (
+				A41FA4A925184AB40073E79D /* container.jpg in CopyFiles */,
+				A41FA4AA25184AB40073E79D /* awesomeface-1.png in CopyFiles */,
+				A41FA4AB25184AB40073E79D /* awesomeface.png in CopyFiles */,
 			);
-			runOnlyForDeploymentPostprocessing = 1;
+			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
 
@@ -284,6 +294,23 @@
 		A41B615624F0101900A138BE /* libSDL2.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libSDL2.a; sourceTree = "<group>"; };
 		A41B615724F0101900A138BE /* libSDL2_test.a */ = {isa = PBXFileReference; lastKnownFileType = archive.ar; path = libSDL2_test.a; sourceTree = "<group>"; };
 		A41B617624F025EF00A138BE /* 1598025169612.bmp */ = {isa = PBXFileReference; lastKnownFileType = image.bmp; path = 1598025169612.bmp; sourceTree = "<group>"; };
+		A41FA4A625184AA70073E79D /* container.jpg */ = {isa = PBXFileReference; lastKnownFileType = image.jpeg; path = container.jpg; sourceTree = "<group>"; };
+		A41FA4A725184AA70073E79D /* awesomeface-1.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = "awesomeface-1.png"; sourceTree = "<group>"; };
+		A41FA4A825184AA70073E79D /* awesomeface.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = awesomeface.png; sourceTree = "<group>"; };
+		A41FA4AC25184AD90073E79D /* std_image.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = std_image.h; sourceTree = "<group>"; };
+		A47937182513BC8A0073333E /* glfw3.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = glfw3.h; sourceTree = "<group>"; };
+		A47937192513BC8A0073333E /* glfw3native.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = glfw3native.h; sourceTree = "<group>"; };
+		A479371D2513BC8A0073333E /* glfw3.pc */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = glfw3.pc; sourceTree = "<group>"; };
+		A47937202513BC8A0073333E /* glfw3Targets-release.cmake */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = "glfw3Targets-release.cmake"; sourceTree = "<group>"; };
+		A47937212513BC8A0073333E /* glfw3ConfigVersion.cmake */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = glfw3ConfigVersion.cmake; sourceTree = "<group>"; };
+		A47937222513BC8A0073333E /* glfw3Targets.cmake */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = glfw3Targets.cmake; sourceTree = "<group>"; };
+		A47937232513BC8A0073333E /* glfw3Config.cmake */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text; path = glfw3Config.cmake; sourceTree = "<group>"; };
+		A47937242513BC8A0073333E /* libglfw.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; path = libglfw.dylib; sourceTree = "<group>"; };
+		A47937252513BC8A0073333E /* libglfw.3.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; path = libglfw.3.dylib; sourceTree = "<group>"; };
+		A47937262513BC8A0073333E /* libglfw.3.3.dylib */ = {isa = PBXFileReference; lastKnownFileType = "compiled.mach-o.dylib"; path = libglfw.3.3.dylib; sourceTree = "<group>"; };
+		A479372A2513BC8A0073333E /* khrplatform.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = khrplatform.h; sourceTree = "<group>"; };
+		A479372C2513BC8A0073333E /* glad.h */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.h; path = glad.h; sourceTree = "<group>"; };
+		A479372E2513BC8A0073333E /* glad.c */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.c; path = glad.c; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -291,6 +318,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A47937302513BC8A0073333E /* libglfw.3.dylib in Frameworks */,
 				A41B615B24F0101900A138BE /* libswscale.5.dylib in Frameworks */,
 				A41B616524F0101900A138BE /* libavutil.56.dylib in Frameworks */,
 				A41B616224F0101900A138BE /* libavformat.58.dylib in Frameworks */,
@@ -311,12 +339,14 @@
 				A41B616C24F0101900A138BE /* libavutil.56.31.100.dylib in Frameworks */,
 				A41B616924F0101900A138BE /* libavdevice.dylib in Frameworks */,
 				A41B617024F0101900A138BE /* libSDL2-2.0.0.dylib in Frameworks */,
+				A479372F2513BC8A0073333E /* libglfw.dylib in Frameworks */,
 				A41B616624F0101900A138BE /* libavcodec.dylib in Frameworks */,
 				A41B616124F0101900A138BE /* libswscale.5.5.100.dylib in Frameworks */,
 				A41B616324F0101900A138BE /* libavformat.dylib in Frameworks */,
 				A41B617124F0101900A138BE /* libSDL2main.a in Frameworks */,
 				A41B616824F0101900A138BE /* libswresample.dylib in Frameworks */,
 				A41B617324F0101900A138BE /* libSDL2.a in Frameworks */,
+				A47937312513BC8A0073333E /* libglfw.3.3.dylib in Frameworks */,
 				A41B615F24F0101900A138BE /* libpostproc.55.5.100.dylib in Frameworks */,
 				A41B616724F0101900A138BE /* libavdevice.58.dylib in Frameworks */,
 				A41B616E24F0101900A138BE /* libavformat.58.29.100.dylib in Frameworks */,
@@ -346,6 +376,9 @@
 			isa = PBXGroup;
 			children = (
 				A41B605924F00FEE00A138BE /* main.c */,
+				A41FA4A525184AA70073E79D /* assert */,
+				A47937272513BC8A0073333E /* glad */,
+				A47937152513BC8A0073333E /* glfw */,
 				A41B617524F025EF00A138BE /* source */,
 				A41B606024F0101900A138BE /* ffmpeg */,
 				A41B60FF24F0101900A138BE /* sdl2 */,
@@ -740,6 +773,132 @@
 			path = source;
 			sourceTree = SOURCE_ROOT;
 		};
+		A41FA4A525184AA70073E79D /* assert */ = {
+			isa = PBXGroup;
+			children = (
+				A41FA4A625184AA70073E79D /* container.jpg */,
+				A41FA4A725184AA70073E79D /* awesomeface-1.png */,
+				A41FA4A825184AA70073E79D /* awesomeface.png */,
+			);
+			path = assert;
+			sourceTree = "<group>";
+		};
+		A47937152513BC8A0073333E /* glfw */ = {
+			isa = PBXGroup;
+			children = (
+				A41FA4AC25184AD90073E79D /* std_image.h */,
+				A47937162513BC8A0073333E /* include */,
+				A479371B2513BC8A0073333E /* lib */,
+			);
+			path = glfw;
+			sourceTree = "<group>";
+		};
+		A47937162513BC8A0073333E /* include */ = {
+			isa = PBXGroup;
+			children = (
+				A47937172513BC8A0073333E /* GLFW */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+		A47937172513BC8A0073333E /* GLFW */ = {
+			isa = PBXGroup;
+			children = (
+				A47937182513BC8A0073333E /* glfw3.h */,
+				A47937192513BC8A0073333E /* glfw3native.h */,
+				A479371A2513BC8A0073333E /* New Group */,
+			);
+			path = GLFW;
+			sourceTree = "<group>";
+		};
+		A479371A2513BC8A0073333E /* New Group */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = "New Group";
+			sourceTree = "<group>";
+		};
+		A479371B2513BC8A0073333E /* lib */ = {
+			isa = PBXGroup;
+			children = (
+				A479371C2513BC8A0073333E /* pkgconfig */,
+				A479371E2513BC8A0073333E /* cmake */,
+				A47937242513BC8A0073333E /* libglfw.dylib */,
+				A47937252513BC8A0073333E /* libglfw.3.dylib */,
+				A47937262513BC8A0073333E /* libglfw.3.3.dylib */,
+			);
+			path = lib;
+			sourceTree = "<group>";
+		};
+		A479371C2513BC8A0073333E /* pkgconfig */ = {
+			isa = PBXGroup;
+			children = (
+				A479371D2513BC8A0073333E /* glfw3.pc */,
+			);
+			path = pkgconfig;
+			sourceTree = "<group>";
+		};
+		A479371E2513BC8A0073333E /* cmake */ = {
+			isa = PBXGroup;
+			children = (
+				A479371F2513BC8A0073333E /* glfw3 */,
+			);
+			path = cmake;
+			sourceTree = "<group>";
+		};
+		A479371F2513BC8A0073333E /* glfw3 */ = {
+			isa = PBXGroup;
+			children = (
+				A47937202513BC8A0073333E /* glfw3Targets-release.cmake */,
+				A47937212513BC8A0073333E /* glfw3ConfigVersion.cmake */,
+				A47937222513BC8A0073333E /* glfw3Targets.cmake */,
+				A47937232513BC8A0073333E /* glfw3Config.cmake */,
+			);
+			path = glfw3;
+			sourceTree = "<group>";
+		};
+		A47937272513BC8A0073333E /* glad */ = {
+			isa = PBXGroup;
+			children = (
+				A47937282513BC8A0073333E /* include */,
+				A479372D2513BC8A0073333E /* src */,
+			);
+			path = glad;
+			sourceTree = "<group>";
+		};
+		A47937282513BC8A0073333E /* include */ = {
+			isa = PBXGroup;
+			children = (
+				A47937292513BC8A0073333E /* KHR */,
+				A479372B2513BC8A0073333E /* glad */,
+			);
+			path = include;
+			sourceTree = "<group>";
+		};
+		A47937292513BC8A0073333E /* KHR */ = {
+			isa = PBXGroup;
+			children = (
+				A479372A2513BC8A0073333E /* khrplatform.h */,
+			);
+			path = KHR;
+			sourceTree = "<group>";
+		};
+		A479372B2513BC8A0073333E /* glad */ = {
+			isa = PBXGroup;
+			children = (
+				A479372C2513BC8A0073333E /* glad.h */,
+			);
+			path = glad;
+			sourceTree = "<group>";
+		};
+		A479372D2513BC8A0073333E /* src */ = {
+			isa = PBXGroup;
+			children = (
+				A479372E2513BC8A0073333E /* glad.c */,
+			);
+			path = src;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -798,6 +957,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				A41B605A24F00FEE00A138BE /* main.c in Sources */,
+				A47937322513BC8A0073333E /* glad.c in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -923,11 +1083,14 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ffmpeg/lib",
 					"$(PROJECT_DIR)/sdl2/lib",
+					"$(PROJECT_DIR)/EPlayer/glfw/lib",
 				);
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				USER_HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/ffmpeg/include",
 					"$(PROJECT_DIR)/sdl2/include",
+					"$(PROJECT_DIR)/glad/include",
+					"$(PROJECT_DIR)/glfw/include",
 				);
 			};
 			name = Debug;
@@ -942,11 +1105,14 @@
 					"$(inherited)",
 					"$(PROJECT_DIR)/ffmpeg/lib",
 					"$(PROJECT_DIR)/sdl2/lib",
+					"$(PROJECT_DIR)/EPlayer/glfw/lib",
 				);
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				USER_HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/ffmpeg/include",
 					"$(PROJECT_DIR)/sdl2/include",
+					"$(PROJECT_DIR)/glad/include",
+					"$(PROJECT_DIR)/glfw/include",
 				);
 			};
 			name = Release;
