@@ -1,5 +1,5 @@
 //
-//  video.h
+//  dumex.h
 //  EPlayer
 //
 //  Created by zhaofei on 2020/9/24.
@@ -9,6 +9,7 @@
 #pragma once
 
 #include "SDL.h"
+
 #include "avdevice.h"
 #include "avformat.h"
 #include "avcodec.h"
@@ -22,9 +23,12 @@
 
 #include "../packet_queue/packet_queue.h"
 #include "../frame_queue/frame_queue.h"
+#include "../clock/clock.h"
+#include "../decoder/decoder.h"
+#include "../audio/audio.h"
+#include "../video/video.h"
 
 #include "../PlayState.h"
 #include "../Global/Global.h"
 
-int video_thread(void *arg);
-int video_refresh(PlayState *is, double *remaining_time, uint8_t *frame_buffer);
+PlayState *stream_open(const char *filename, AVInputFormat *input_fmt);

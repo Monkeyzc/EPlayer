@@ -6,9 +6,16 @@
 //  Copyright © 2020 zhaofei. All rights reserved.
 //
 
-#ifndef clock_h
-#define clock_h
+#pragma once
 
-#include <stdio.h>
+typedef struct Clock {
+    double pts;
+    double pts_drift;
+    double last_updated;
+    double speed;
+    int serial;
+    int paused;
+    int *queue_serial;
+} Clock;
 
-#endif /* clock_h */
+void clock_init(Clock *c, int *queue_serial);

@@ -7,3 +7,9 @@
 //
 
 #include "clock.h"
+
+void clock_init(Clock *c, int *queue_serial) {
+    c->speed = 1.0;
+    c->paused = 0;
+    c->queue_serial = queue_serial;
+}
