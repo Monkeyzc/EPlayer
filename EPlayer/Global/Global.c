@@ -9,3 +9,5 @@
 #include "Global.h"
 
 int startup_volume = 100;
+
+double remaining_time = 0.0;

@@ -23,7 +23,7 @@
 
 #include "../packet_queue/packet_queue.h"
 
-#define VIDEO_PICTURE_QUEUE_SIZE 3
+#define VIDEO_PICTURE_QUEUE_SIZE 10
 #define SUBPICTURE_QUEUE_SIZE 16
 #define SAMPLE_QUEUE_SIZE 9
 #define FRAME_QUEUE_SIZE FFMAX(SAMPLE_QUEUE_SIZE, FFMAX(VIDEO_PICTURE_QUEUE_SIZE, SUBPICTURE_QUEUE_SIZE))
@@ -57,6 +57,8 @@ typedef struct FrameQueue {
     SDL_cond *cond;
     PacketQueue *pkt_queue;
     
+    // 1 音频 2 视频
+    int type;
 } FrameQueue;
 
 
@@ -70,8 +72,12 @@ void frame_queue_push(FrameQueue *f);
 
 Frame *frame_queue_peek_readable(FrameQueue *f);
 void frame_queue_next(FrameQueue *f);
+
 Frame *frame_queue_peek_last(FrameQueue *f);
+Frame *frame_queue_peek(FrameQueue *f);
 
 int frame_queue_nb_remaining(FrameQueue *f);
+
+Frame *frame_queue_peek_next(FrameQueue *f);
 
 

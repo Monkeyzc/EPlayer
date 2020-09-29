@@ -336,7 +336,7 @@ typedef struct AVFilterInternal AVFilterInternal;
 
 /** An instance of a filter */
 struct AVFilterContext {
-    const AVClass *av_class;        ///< needed for av_log() and filters common options
+    const AVClass *av_class;        ///< needed for //av_log() and filters common options
 
     const AVFilter *filter;         ///< the AVFilter of which this is an instance
 

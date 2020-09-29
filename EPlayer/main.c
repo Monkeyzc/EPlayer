@@ -11,7 +11,7 @@
 void set_av_log_level_and_check_ffmpeg_version() {
     av_log_set_level(AV_LOG_DEBUG);
     const char *version_info = av_version_info();
-    av_log(NULL, AV_LOG_INFO, "FFmpeg version info: %s\n", version_info);
+//    av_log(NULL, AV_LOG_INFO, "FFmpeg version info: %s\n", version_info);
 }
 
 void check_sdl_version() {
@@ -85,6 +85,9 @@ int main(int argc, const char * argv[]) {
     char infoLog[1024] = {0, };
     
     const char *input_filename = "/Users/zhaofei/Desktop/bunny_1080p_60fps.mp4";
+//    "/Users/zhaofei/Desktop/bunny_1080p_60fps.mp4";
+//    "/Users/zhaofei/Desktop/EASYLIFE TEST CARD AUDIO VIDEO SYNC 16_9 10 min Ver2 1080 30FPS.mp4";
+//    bunny_1080p_60fps.mp4";
 //    "/Users/zhaofei/Desktop/small_bunny_1080p_30fps.mp4";
 //    "/Users/zhaofei/Desktop/filter.aac";
 //    "http://ivi.bupt.edu.cn/hls/cctv1hd.m3u8";
@@ -235,7 +238,7 @@ int main(int argc, const char * argv[]) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
     uint8_t *frame_data;
-    frame_data = malloc(1920*1080*4);
+    frame_data = malloc(width*height*4);
 
     while (!glfwWindowShouldClose(window)) {
         // 输入处理
@@ -245,8 +248,9 @@ int main(int argc, const char * argv[]) {
         glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
         
-        if (video_refresh(is, 0, frame_data) >= 0) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, 1920, 1080, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame_data);
+//        double remaining_time = 0.0;
+        if (video_refresh(is, &remaining_time, frame_data) >= 0) {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame_data);
             glGenerateMipmap(GL_TEXTURE_2D);
         }
         

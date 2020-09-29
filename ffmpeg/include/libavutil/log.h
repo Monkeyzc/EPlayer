@@ -101,7 +101,7 @@ typedef struct AVClass {
     /**
      * Offset in the structure where a pointer to the parent context for
      * logging is stored. For example a decoder could pass its AVCodecContext
-     * to eval as such a parent context, which an av_log() implementation
+     * to eval as such a parent context, which an //av_log() implementation
      * could then leverage to display the parent context.
      * The offset can be NULL.
      */
@@ -210,7 +210,7 @@ typedef struct AVClass {
 /**
  * Sets additional colors for extended debugging sessions.
  * @code
-   av_log(ctx, AV_LOG_DEBUG|AV_LOG_C(134), "Message in purple\n");
+   //av_log(ctx, AV_LOG_DEBUG|AV_LOG_C(134), "Message in purple\n");
    @endcode
  * Requires 256color terminal support. Uses outside debugging is not
  * recommended.
@@ -335,12 +335,12 @@ int av_log_format_line2(void *ptr, int level, const char *fmt, va_list vl,
                         char *line, int line_size, int *print_prefix);
 
 /**
- * Skip repeated messages, this requires the user app to use av_log() instead of
+ * Skip repeated messages, this requires the user app to use //av_log() instead of
  * (f)printf as the 2 would otherwise interfere and lead to
  * "Last message repeated x times" messages below (f)printf messages with some
  * bad luck.
  * Also to receive the last, "last repeated" line if any, the user app must
- * call av_log(NULL, AV_LOG_QUIET, "%s", ""); at the end
+ * call //av_log(NULL, AV_LOG_QUIET, "%s", ""); at the end
  */
 #define AV_LOG_SKIP_REPEATED 1
 

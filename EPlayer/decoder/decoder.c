@@ -26,7 +26,7 @@ int decoder_start(Decoder *d, int (*fn)(void *), const char *thread_name, void* 
     // 创建 解码线程
     d->decoder_tid = SDL_CreateThread(fn, thread_name, arg);
     if (!d->decoder_tid) {
-        av_log(NULL, AV_LOG_ERROR, "SDL_CreateThread(): %s\n", SDL_GetError());
+        //av_log(NULL, AV_LOG_ERROR, "SDL_CreateThread(): %s\n", SDL_GetError());
         return AVERROR(ENOMEM);
     }
     return 0;
@@ -61,6 +61,23 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                         }
                         
                         if (ret >= 0) {
+                            
+                            double real_time = frame->pts * av_q2d(d->codec_ctx->pkt_timebase);
+                            av_log(NULL, AV_LOG_DEBUG, "Audio frame->pts: %lld  <=====>  real_time: %f\n", frame->pts, real_time);
+                            
+                            AVRational tb = (AVRational){1, frame->sample_rate};
+//                            frame->pts = av_rescale_q(frame->pts, d->codec_ctx->pkt_timebase, tb);
+                            if (frame->pts != AV_NOPTS_VALUE)
+                                frame->pts = av_rescale_q(frame->pts, d->codec_ctx->pkt_timebase, tb);
+                            else if (d->next_pts != AV_NOPTS_VALUE)
+                                frame->pts = av_rescale_q(d->next_pts, d->next_pts_tb, tb);
+                            if (frame->pts != AV_NOPTS_VALUE) {
+                                d->next_pts = frame->pts + frame->nb_samples;
+                                d->next_pts_tb = tb;
+                            }
+                            av_log(NULL, AV_LOG_DEBUG, "Audio frame->pts first correct result: %lld\n", frame->pts);
+                            
+                            //av_log(NULL, AV_LOG_DEBUG, "audio frame->pts: %lld\n", frame->pts);
                             return 1;
                         }
 
@@ -76,6 +93,9 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                         }
                         
                         if (ret >= 0) {
+                            
+                            frame->pts = frame->best_effort_timestamp;
+                            
                             return 1;
                         }
 
@@ -115,7 +135,7 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
             if (send_ret < 0) {
                 char error[1024] = {0,};
                 av_strerror(ret, error, 1024);
-                av_log(NULL, AV_LOG_ERROR, "send packet to codec error: %s\n", error);
+                //av_log(NULL, AV_LOG_ERROR, "send packet to codec error: %s\n", error);
             }
             av_packet_unref(&pkt);
         }

@@ -12,12 +12,12 @@ int packet_queue_init(PacketQueue *pkt_q) {
     memset(pkt_q, 0, sizeof(PacketQueue));
 
     if ((pkt_q->mutex = SDL_CreateMutex()) == NULL) {
-        av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex error: %s\n", SDL_GetError());
+        //av_log(NULL, AV_LOG_FATAL, "SDL_CreateMutex error: %s\n", SDL_GetError());
         return AVERROR(ENOMEM);
     }
 
     if ((pkt_q->cond = SDL_CreateCond()) == NULL) {
-        av_log(NULL, AV_LOG_FATAL, "SDL_CreateCond error: %s\n", SDL_GetError());
+        //av_log(NULL, AV_LOG_FATAL, "SDL_CreateCond error: %s\n", SDL_GetError());
         return AVERROR(ENOMEM);
     }
 

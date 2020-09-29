@@ -7,6 +7,7 @@
 //
 
 #include "audio.h"
+#include "libavutil/time.h"
 
 /**
     从frame_queue 中取出 frame 数据, 并重采样
@@ -30,7 +31,7 @@ static int audio_decode_frame(PlayState *is) {
     
     wanted_nb_samples = af->frame->nb_samples;
     
-    // 是否需要重采样
+    
     if (!is->swr_ctx) {
         
         is->swr_ctx = swr_alloc_set_opts(is->swr_ctx,
@@ -52,7 +53,7 @@ static int audio_decode_frame(PlayState *is) {
     
     if (wanted_nb_samples != af->frame->nb_samples) {
         if (swr_set_compensation(is->swr_ctx, (wanted_nb_samples - af->frame->nb_samples) * is->audio_tgt.freq / af->frame->sample_rate, wanted_nb_samples * is->audio_tgt.freq / af->frame->sample_rate) < 0) {
-            av_log(NULL, AV_LOG_DEBUG, "swr_set_compensation() failed\n");
+            //av_log(NULL, AV_LOG_DEBUG, "swr_set_compensation() failed\n");
             return -1;
         }
     }
@@ -63,16 +64,26 @@ static int audio_decode_frame(PlayState *is) {
     }
     len2 = swr_convert(is->swr_ctx, out, out_count, in, af->frame->nb_samples);
     if (len2 < 0) {
-        av_log(NULL, AV_LOG_ERROR, "swr_convert failed\n");
+        //av_log(NULL, AV_LOG_ERROR, "swr_convert failed\n");
         return -1;
     }
     
     if (len2 == out_count) {
-        av_log(NULL, AV_LOG_WARNING, "audio buffer is probably too small\n");
+        //av_log(NULL, AV_LOG_WARNING, "audio buffer is probably too small\n");
     }
     
     is->audio_buf = is->audio_buf1;
     resample_data_size = len2 * is->audio_tgt.channels * av_get_bytes_per_sample(is->audio_tgt.fmt);
+    
+    /* update the audio clock with the pts */
+    if (!isnan(af->pts)) {
+        // ???: Why
+        is->audio_pts_c = af->pts;
+//    + (double) af->frame->nb_samples / af->frame->sample_rate;
+    }
+    else
+        is->audio_pts_c = NAN;
+    is->audio_clock_serial = af->serial;
     
     // 不需要重采样
 //    is->audio_buf = af->frame->data[0];
@@ -89,6 +100,8 @@ static int audio_decode_frame(PlayState *is) {
 static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     PlayState *is = opaque;
     int audio_size, len1;
+    
+    double audio_callback_time = av_gettime_relative();
     
     while (len > 0) {
         if (is->audio_buf_index >= is->audio_buf_size) {
@@ -111,7 +124,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         }
         if (is->audio_buf) {
             memset(stream, 0, len1);
-//            SDL_MixAudioFormat(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, AUDIO_S16SYS, len1, is->audio_volume);
+            //av_log(NULL, AV_LOG_DEBUG, "sdl 播放\n");
             SDL_MixAudio(stream, (uint8_t *)is->audio_buf + is->audio_buf_index, len1, is->audio_volume);
         }
         
@@ -119,7 +132,15 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
         stream += len1;
         is->audio_buf_index += len1;
     }
-    is->auido_write_but_size = is->auido_write_but_size - is->audio_buf_index;
+    is->audio_write_buf_size = is->audio_write_buf_size - is->audio_buf_index;
+    
+    // ???: Why? 移除sdl buf 的时间, 采用 audio_pts_c (frame_pts时间) 后 音视频 同步了
+    double pts = is->audio_pts_c;
+//    - (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_tgt.bytes_per_sec;
+    
+    av_log(NULL, AV_LOG_DEBUG, "Audio clock pts third correct: %f\n", pts);
+    
+    set_clock_at(&is->audio_clock, pts, is->audio_clock_serial, audio_callback_time / 1000000.0);
 }
 
 
@@ -151,7 +172,7 @@ int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb_channe
     wanted_spec.freq = wanted_sample_rate;
     
     if (wanted_spec.freq <= 0 || wanted_spec.channels <= 0) {
-        av_log(NULL, AV_LOG_DEBUG, "Invalid sample rate or channel count\n");
+        //av_log(NULL, AV_LOG_DEBUG, "Invalid sample rate or channel count\n");
         return -1;
     }
     
@@ -168,19 +189,19 @@ int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb_channe
     
     
     if (SDL_OpenAudio(&wanted_spec, &spec) < 0) {
-       av_log(NULL, AV_LOG_WARNING, "SDL_Open Audio (%d channels, %d Hz): %s\n", wanted_spec.channels, wanted_spec.freq, SDL_GetError());
+       //av_log(NULL, AV_LOG_WARNING, "SDL_Open Audio (%d channels, %d Hz): %s\n", wanted_spec.channels, wanted_spec.freq, SDL_GetError());
         return -1;
     }
     
     if (spec.format != AUDIO_S16SYS) {
-        av_log(NULL, AV_LOG_ERROR, "SDL advised audio format %d is not supported!\n", spec.format);
+        //av_log(NULL, AV_LOG_ERROR, "SDL advised audio format %d is not supported!\n", spec.format);
         return -1;
     }
     
     if (spec.channels != wanted_spec.channels) {
         wanted_channel_layout = av_get_default_channel_layout(spec.channels);
         if (!wanted_channel_layout) {
-            av_log(NULL, AV_LOG_ERROR, "SDL advised audio channel count %d is not supported!\n", spec.channels);
+            //av_log(NULL, AV_LOG_ERROR, "SDL advised audio channel count %d is not supported!\n", spec.channels);
             return -1;
         }
     }
@@ -199,7 +220,9 @@ int audio_open(void *opaque, int64_t wanted_channel_layout, int wanted_nb_channe
 int audio_thread(void* arg) {
     PlayState *is = arg;
     int ret = 0;
-    av_log(NULL, AV_LOG_DEBUG, "audio_thread arg: %p\n", arg);
+    //av_log(NULL, AV_LOG_DEBUG, "audio_thread arg: %p\n", arg);
+    
+    AVRational tb;
     
     AVPacket *pkt;
     pkt = av_packet_alloc();
@@ -219,7 +242,14 @@ int audio_thread(void* arg) {
                 if (!(af_frame = frame_queue_peek_writable(&is->audio_frame_queue))) {
                     goto __END_audio_thread;
                 }
+                
+                tb = (AVRational){1, frame->sample_rate};
+                
+                af_frame->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
+                av_log(NULL, AV_LOG_DEBUG, "Audio af_frame->pts  second correct result: %f\n", af_frame->pts);
+                
                 af_frame->serial = is->audio_decoder.pkt_serial;
+                
                 av_frame_move_ref(af_frame->frame, frame);
                 // 写入 frame queue
                 frame_queue_push(&is->audio_frame_queue);

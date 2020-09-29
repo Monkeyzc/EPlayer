@@ -39,3 +39,17 @@ int picture_index = 0;
 
 const char *out_file_name = "/Users/zhaofei/Downloads/test_record_audio_aac_decode.pcm";
 FILE *outfile = NULL;
+
+
+/**
+ *  测试视频
+ *  http://devimages.apple.com.edgekey.net/streaming/examples/bipbop_4x3/gear2/fileSequence20.ts
+ */
+
+
+/**
+ 
+ 文章:
+ https://juejin.im/post/6844903815934640136
+ 
+ */
