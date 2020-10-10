@@ -8,10 +8,17 @@
 
 #include "header.h"
 
+// video aspect ratio width/height
+double rat_w_h = 1.0;
+// vetex positon scale (X)
+float h_scale = 1.0;
+// vertex postion scale (Y)
+float v_scale = 1.0;
+
 void set_av_log_level_and_check_ffmpeg_version() {
-    av_log_set_level(AV_LOG_DEBUG);
+//    av_log_set_level(AV_LOG_DEBUG);
     const char *version_info = av_version_info();
-//    av_log(NULL, AV_LOG_INFO, "FFmpeg version info: %s\n", version_info);
+    av_log(NULL, AV_LOG_INFO, "FFmpeg version info: %s\n", version_info);
 }
 
 void check_sdl_version() {
@@ -30,23 +37,145 @@ void error_callback(int error, const char *description) {
     printf("error_callback: error: %d, description: %s\n", error, description);
 }
 
+GLFWmonitor* getBestMonitor(GLFWwindow *window) {
+    int monitorCount;
+    GLFWmonitor **monitors = glfwGetMonitors(&monitorCount);
+
+    if (!monitors)
+        return NULL;
+
+    int windowX, windowY, windowWidth, windowHeight;
+    glfwGetWindowSize(window, &windowWidth, &windowHeight);
+    glfwGetWindowPos(window, &windowX, &windowY);
+
+    GLFWmonitor *bestMonitor = NULL;
+    int bestArea = 0;
+
+    for (int i = 0; i < monitorCount; ++i) {
+        GLFWmonitor *monitor = monitors[i];
+
+        int monitorX, monitorY;
+        glfwGetMonitorPos(monitor, &monitorX, &monitorY);
+
+        const GLFWvidmode *mode = glfwGetVideoMode(monitor);
+        if (!mode)
+            continue;
+
+        int areaMinX = FFMAX(windowX, monitorX);
+        int areaMinY = FFMAX(windowY, monitorY);
+
+        int areaMaxX = FFMIN(windowX + windowWidth, monitorX + mode->width);
+        int areaMaxY = FFMIN(windowY + windowHeight, monitorY + mode->height);
+
+        int area = (areaMaxX - areaMinX) * (areaMaxY - areaMinY);
+
+        if (area > bestArea) {
+            bestArea = area;
+            bestMonitor = monitor;
+        }
+    }
+
+    return bestMonitor;
+}
+
+void centerWindow(GLFWwindow *window, GLFWmonitor *monitor) {
+    if (!monitor)
+        return;
+
+    const GLFWvidmode *mode = glfwGetVideoMode(monitor);
+    if (!mode)
+        return;
+
+    int monitorX, monitorY;
+    glfwGetMonitorPos(monitor, &monitorX, &monitorY);
+    printf("mode->width: %d, monitorY: %d\n", mode->width, mode->height);
+
+    int windowWidth, windowHeight;
+    glfwGetWindowSize(window, &windowWidth, &windowHeight);
+
+    glfwSetWindowPos(window,
+                     monitorX + (mode->width - windowWidth) / 2,
+                     monitorY + (mode->height - windowHeight) / 2);
+}
+
+
+void window_size_callback(GLFWwindow* window, int width, int height) {
+    if (width * 1.0 / height != rat_w_h) {
+        GLFWmonitor* monitor = getBestMonitor(window);
+        if (monitor) {
+            
+            const GLFWvidmode *mode = glfwGetVideoMode(monitor);
+            if (!mode)
+                return;
+            
+            int screen_width = mode->width;
+            int screen_height = mode->height;
+            
+            int windowWidth, windowHeight;
+            glfwGetWindowSize(window, &windowWidth, &windowHeight);
+            
+            float screen_rat = screen_width * 1.0 / screen_height;
+            if (screen_rat < rat_w_h) {
+                // V
+                int real_height = screen_width / rat_w_h;
+                v_scale = real_height * 1.0 / screen_height;
+            } else {
+                // H
+                int real_width = screen_height * rat_w_h;
+                h_scale = real_width * 1.0 / screen_width;
+            }
+        }
+    } else {
+        h_scale = 1.0;
+        v_scale = 1.0;
+    }
+}
+
+void window_maximize_callback(GLFWwindow* window, int maximized) {
+}
+
 /*
  每当窗口改变大小，GLFW会调用这个函数并填充相应的参数供你处理
  当窗口被第一次显示的时候framebuffer_size_callback也会被调用
  */
 void frame_buffersize_callback(GLFWwindow *window, int width, int height) {
     glViewport(0, 0, width, height);
-    
 }
+
 
 // 输入处理函数
 void processInput(GLFWwindow* window) {
     if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
         glfwSetWindowShouldClose(window, 1);
     }
+    
+    if (glfwGetKey(window, GLFW_KEY_UP) == GLFW_PRESS) {
+        v_scale += 0.01f;
+        if (v_scale >= 1.0f) {
+            v_scale = 1.0f;
+        }
+    }
+    if (glfwGetKey(window, GLFW_KEY_DOWN) == GLFW_PRESS) {
+        v_scale -= 0.01f;
+        if (v_scale <= 0.0f) {
+            v_scale = 0.0f;
+        }
+    }
+    
+    if (glfwGetKey(window, GLFW_KEY_RIGHT) == GLFW_PRESS) {
+        h_scale += 0.01f;
+        if (h_scale >= 1.0f) {
+            h_scale = 1.0f;
+        }
+    }
+    if (glfwGetKey(window, GLFW_KEY_LEFT) == GLFW_PRESS) {
+        h_scale -= 0.01f;
+        if (h_scale <= 0.0f) {
+            h_scale = 0.0f;
+        }
+    }
 }
 
-float mixValue = 0.2;
 
 const char *vertexShaderSource = "#version 330 core\n"
     "layout (location = 0) in vec3 aPos;\n"
@@ -54,9 +183,11 @@ const char *vertexShaderSource = "#version 330 core\n"
     "layout (location = 2) in vec2 aTexCoord;\n"
     "out vec3 outColor;\n"
     "out vec2 TexCoord;\n"
+    "uniform float h_scale;\n"
+    "uniform float v_scale;\n"
     "void main()\n"
     "{\n"
-    "   gl_Position = vec4(aPos.x, -aPos.y, aPos.z, 1.0);\n" // 翻转Y
+    "   gl_Position = vec4(aPos.x * h_scale, -aPos.y * v_scale, aPos.z, 1.0);\n" // 翻转Y
     "   outColor = aColor;\n"
     "   TexCoord = aTexCoord;\n"
     "}\n";
@@ -78,20 +209,13 @@ int main(int argc, const char * argv[]) {
     
     outfile = fopen(out_file_name, "wb");
         
-    int width = 1920;
-    int height = 1080;
+    int width_default = 1920 * 0.6;
+    int height_default = 1080 * 0.6;
     
     int success = 0;
     char infoLog[1024] = {0, };
     
-    const char *input_filename = "/Users/zhaofei/Desktop/bunny_1080p_60fps.mp4";
-//    "/Users/zhaofei/Desktop/bunny_1080p_60fps.mp4";
-//    "/Users/zhaofei/Desktop/EASYLIFE TEST CARD AUDIO VIDEO SYNC 16_9 10 min Ver2 1080 30FPS.mp4";
-//    bunny_1080p_60fps.mp4";
-//    "/Users/zhaofei/Desktop/small_bunny_1080p_30fps.mp4";
-//    "/Users/zhaofei/Desktop/filter.aac";
-//    "http://ivi.bupt.edu.cn/hls/cctv1hd.m3u8";
-//    "/Users/zhaofei/Desktop/out.mp3";
+    const char *input_filename = "/Users/zhaofei/Desktop/prog_index.mp4";
     
     set_av_log_level_and_check_ffmpeg_version();
     check_sdl_version();
@@ -115,10 +239,11 @@ int main(int argc, const char * argv[]) {
     
     float vertices[] = {
         // --- 位置 ---          --- 颜色 ---      --- 纹理坐标 ---
-        1.0f,   1.0f, 0.0f,  1.0f, 0.0f, 0.0f,      1.0f, 1.0f,                      // right top
-        1.0f,   -1.0f, 0.0f,  0.0f, 1.0f, 0.0f,      1.0f, 0.0f,                      // right bottom
-        -1.0f,   -1.0f, 0.0f,  0.0f, 0.0f, 1.0f,      0.0f, 0.0f,                       // left bottom
-        -1.0f,   1.0f, 0.0f,  1.0f, 1.0f, 0.0f,      0.0f, 1.0f,                      // left top
+        -1.0f,  -1.0f, 0.0f,  0.0f, 0.0f, 1.0f,      0.0f, 0.0f,                       // left bottom
+        -1.0f,   1.0f, 0.0f,  1.0f, 1.0f, 0.0f,      0.0f, 1.0f,                       // left top
+        
+        1.0f,    1.0f, 0.0f,  1.0f, 0.0f, 0.0f,      1.0f, 1.0f,                       // right top
+        1.0f,   -1.0f, 0.0f,  0.0f, 1.0f, 0.0f,      1.0f, 0.0f,                       // right bottom
     };
     
     unsigned int indices[] = {
@@ -142,13 +267,17 @@ int main(int argc, const char * argv[]) {
     
     glfwWindowHint(GLFW_SAMPLES, 4);
     
-    glfwSetErrorCallback(error_callback);
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
     
-    window = glfwCreateWindow(width, height, "Hello world", NULL, NULL);
+    glfwSetErrorCallback(error_callback);
+        
+    window = glfwCreateWindow(width_default, height_default, "EPlayer", NULL, NULL);
     if (!window) {
         printf("create window failed\n");
         goto __Destroy;
     }
+    
+    glfwSetWindowMaximizeCallback(window, window_maximize_callback);
     
     glfwMakeContextCurrent(window);
     
@@ -159,8 +288,8 @@ int main(int argc, const char * argv[]) {
         goto __Destroy;
     }
     
+    glfwSetWindowSizeCallback(window, window_size_callback);
     glfwSetFramebufferSizeCallback(window, frame_buffersize_callback);
-    
 
     // vertex shafer
     vertexShader = glCreateShader(GL_VERTEX_SHADER);
@@ -231,32 +360,55 @@ int main(int argc, const char * argv[]) {
     glGenTextures(1, &texture);
     glBindTexture(GL_TEXTURE_2D, texture);
     // 纹理环绕方式
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);      // X 轴
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);               // Y 轴
     // 当进行放大 Magnify 和 缩小 Minify 操作, 设置的纹理过滤选项, 领近过滤/线性过滤
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
-    uint8_t *frame_data;
-    frame_data = malloc(width*height*4);
-
+    uint8_t *frame_data = NULL;
+    
     while (!glfwWindowShouldClose(window)) {
         // 输入处理
         processInput(window);
         
-        // 渲染指令
-        glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
-        glClear(GL_COLOR_BUFFER_BIT);
-        
-//        double remaining_time = 0.0;
-        if (video_refresh(is, &remaining_time, frame_data) >= 0) {
-            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame_data);
-            glGenerateMipmap(GL_TEXTURE_2D);
+        if (!frame_data) {
+            if (is->width) {
+                frame_data = malloc(is->width * is->height * 4);
+
+                rat_w_h = is->width * 1.0 / is->height;
+                
+                // 16 : 9
+                glfwSetWindowAspectRatio(window, is->width, is->height);
+                // min size
+                glfwSetWindowSizeLimits(window, is->width * 0.5, is->height * 0.5, GLFW_DONT_CARE, GLFW_DONT_CARE);
+                
+                int resize_width = is->width < width_default ? is->width : width_default;
+                int resize_height = is->height * resize_width / is->width;
+
+                // window size
+                glfwSetWindowSize(window, resize_width, resize_height);
+                
+                // window position center
+                centerWindow(window, getBestMonitor(window));
+            }
+        } else {
+            // 渲染指令
+            glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+
+            glUniform1f(glGetUniformLocation(shaderProgram, "v_scale"), v_scale);
+            glUniform1f(glGetUniformLocation(shaderProgram, "h_scale"), h_scale);
+
+            if (video_refresh(is, &remaining_time, frame_data) >= 0) {
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, is->width, is->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, frame_data);
+                glGenerateMipmap(GL_TEXTURE_2D);
+            }
+
+            glUseProgram(shaderProgram);
+            glBindVertexArray(VAO);
+            glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
         }
-        
-        glUseProgram(shaderProgram);
-        glBindVertexArray(VAO);
-        glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
 
         
         //glfwSwapBuffers函数会交换颜色缓冲（它是一个储存着GLFW窗口每一个像素颜色值的大缓冲），它在这一迭代中被用来绘制，并且将会作为输出显示在屏幕上

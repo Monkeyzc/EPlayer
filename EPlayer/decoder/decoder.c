@@ -62,8 +62,8 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                         
                         if (ret >= 0) {
                             
-                            double real_time = frame->pts * av_q2d(d->codec_ctx->pkt_timebase);
-                            av_log(NULL, AV_LOG_DEBUG, "Audio frame->pts: %lld  <=====>  real_time: %f\n", frame->pts, real_time);
+//                            double real_time = frame->pts * av_q2d(d->codec_ctx->pkt_timebase);
+//                            av_log(NULL, AV_LOG_DEBUG, "Audio frame->pts: %lld  <=====>  real_time: %f\n", frame->pts, real_time);
                             
                             AVRational tb = (AVRational){1, frame->sample_rate};
 //                            frame->pts = av_rescale_q(frame->pts, d->codec_ctx->pkt_timebase, tb);
@@ -75,7 +75,7 @@ int decoder_decode_frame(Decoder *d, AVFrame *frame, AVSubtitle *sub) {
                                 d->next_pts = frame->pts + frame->nb_samples;
                                 d->next_pts_tb = tb;
                             }
-                            av_log(NULL, AV_LOG_DEBUG, "Audio frame->pts first correct result: %lld\n", frame->pts);
+//                            av_log(NULL, AV_LOG_DEBUG, "Audio frame->pts first correct result: %lld\n", frame->pts);
                             
                             //av_log(NULL, AV_LOG_DEBUG, "audio frame->pts: %lld\n", frame->pts);
                             return 1;

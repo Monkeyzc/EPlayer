@@ -138,7 +138,7 @@ static void sdl_audio_callback(void *opaque, Uint8 *stream, int len) {
     double pts = is->audio_pts_c;
 //    - (double)(2 * is->audio_hw_buf_size + is->audio_write_buf_size) / is->audio_tgt.bytes_per_sec;
     
-    av_log(NULL, AV_LOG_DEBUG, "Audio clock pts third correct: %f\n", pts);
+//    av_log(NULL, AV_LOG_DEBUG, "Audio clock pts third correct: %f\n", pts);
     
     set_clock_at(&is->audio_clock, pts, is->audio_clock_serial, audio_callback_time / 1000000.0);
 }
@@ -246,7 +246,7 @@ int audio_thread(void* arg) {
                 tb = (AVRational){1, frame->sample_rate};
                 
                 af_frame->pts = (frame->pts == AV_NOPTS_VALUE) ? NAN : frame->pts * av_q2d(tb);
-                av_log(NULL, AV_LOG_DEBUG, "Audio af_frame->pts  second correct result: %f\n", af_frame->pts);
+//                av_log(NULL, AV_LOG_DEBUG, "Audio af_frame->pts  second correct result: %f\n", af_frame->pts);
                 
                 af_frame->serial = is->audio_decoder.pkt_serial;
                 

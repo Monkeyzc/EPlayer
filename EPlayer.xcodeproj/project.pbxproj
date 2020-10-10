@@ -1145,6 +1145,7 @@
 					"$(PROJECT_DIR)/sdl2/lib",
 					"$(PROJECT_DIR)/EPlayer/glfw/lib",
 				);
+				MACOSX_DEPLOYMENT_TARGET = 10.11;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				USER_HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/ffmpeg/include",
@@ -1167,6 +1168,7 @@
 					"$(PROJECT_DIR)/sdl2/lib",
 					"$(PROJECT_DIR)/EPlayer/glfw/lib",
 				);
+				MACOSX_DEPLOYMENT_TARGET = 10.11;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				USER_HEADER_SEARCH_PATHS = (
 					"$(PROJECT_DIR)/ffmpeg/include",

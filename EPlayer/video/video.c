@@ -84,10 +84,16 @@ int video_thread(void *arg) {
 
         if (ret) {
             while (frame->width) {
+                
+                if (!is->width) {
+                    is->width = frame->width;
+                    is->height = frame->height;
+                }
+                
                 if (!(vp_frame = frame_queue_peek_writable(&is->video_frame_queue))) {
                     return -1;
                 }
-
+                
                 vp_frame->serial = is->video_decoder.pkt_serial;
                 
                 double duration = (frame_rate.num && frame_rate.den ? av_q2d((AVRational){frame_rate.den, frame_rate.num}) : 0);
@@ -113,7 +119,7 @@ int video_thread(void *arg) {
 
 int video_refresh(PlayState *is, double *remaining_time, uint8_t *frame_buffer) {
     
-    av_log(NULL, AV_LOG_DEBUG, "remaining_time: %f\n", *remaining_time);
+//    av_log(NULL, AV_LOG_DEBUG, "remaining_time: %f\n", *remaining_time);
     if (*remaining_time > 0.0) {
         //av_log(NULL, AV_LOG_DEBUG, "av_usleep: %lld\n", (int64_t)(*remaining_time * 1000000.0));
 //        av_usleep((unsigned int)(*remaining_time * 1000000.0));
@@ -179,7 +185,7 @@ __retry:
         if (time < is->frame_timer + delay) {
             // 系统时间还未到达, 上一帧的结束时刻, 继续 显示 上一帧
             double result = FFMIN(is->frame_timer + delay - time, *remaining_time);
-            av_log(NULL, AV_LOG_DEBUG, "FFMIN result: %f\n", result);
+//            av_log(NULL, AV_LOG_DEBUG, "FFMIN result: %f\n", result);
             *remaining_time = result;
             // goto display
             //av_log(NULL, AV_LOG_DEBUG, "goto __display 系统时间还未到达, 上一帧的结束时刻, 继续 显示 上一帧 time < is->frame_timer + delay: %f < %f + %f = %f\n", time, is->frame_timer, delay, is->frame_timer + delay);
